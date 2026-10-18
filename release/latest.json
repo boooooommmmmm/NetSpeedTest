@@ -1,10 +1,10 @@
 {
-  "Version": "1.4.0",
-  "DownloadUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/download/v1.4.0/NetPulse.exe",
-  "ReleaseUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/tag/v1.4.0",
-  "Size": 65249355,
-  "Sha256": "c23df861b28d819bc57a3ec77232789c78966f29919c1f34ab4e2aaaa22e4b7b",
-  "Notes": "# NetPulse v1.4.0\n\n新增 Speedtest.net 节点和 IP 定期同步，并启用新的“网络脉搏”应用图标。Windows x64 单文件分发，下载 `NetPulse.exe` 即可运行，无需安装运行库。\n\n- 默认使用“Speedtest.net · Ookla 节点”，动态获取公开节点，检测可达性并解析 IPv4 / IPv6。默认运行期间每 15 分钟刷新，可选 5 / 15 / 30 / 60 分钟，也可手动同步或关闭自动同步。\n- 保存最近选择的节点源。Speedtest.net 与测速网分别缓存列表和选中节点，切换来源及重启后恢复；兼容旧版同步设置与测速网缓存。\n- 同步失败或取消时保留现有缓存，开启自动同步时 1 分钟后重试；测速与下载更新期间顺延刷新，避免影响带宽测试。定时刷新只更新节点/IP 并做小流量探测，不会自动进行下载、上传测速。\n- Speedtest.net 节点使用 HTTPS 与正常证书校验，按公开主机别名连接；检查标准延迟响应和下载 JPEG 标识，上传仅统计服务器确认收到的数据。\n- 新应用图标覆盖 EXE、窗口、任务栏和界面左上角，包含 16～256 像素共 10 档透明图像，针对小尺寸优化笔画。\n- 保留测速网、Cloudflare、自定义 HTTP 节点、下载/上传测速、延迟/抖动/失败率、CSV 导出和 GitHub 新版本检查。\n\n程序自行实现 HTTP 吞吐测量，未集成 Ookla 官方测速引擎，结果可能与 Speedtest.net 网页或官方 App 不同。部分公开节点不支持此 HTTP 测速方式，可以切换节点或来源。测速会产生实际流量。\n\n旧版可点击“检查更新”，保存新版 EXE 后关闭旧版，再运行或替换新文件，用户设置与节点缓存继续保留。\n",
-  "PublishedAt": "2026-10-18T07:28:30.1531735+00:00",
-  "SourceCommit": "a7f18da84b6be0f9c388e6411d8689ce7b5ae7b8"
+  "Version": "1.5.0",
+  "DownloadUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/download/v1.5.0/NetPulse.exe",
+  "ReleaseUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/tag/v1.5.0",
+  "Size": 65271484,
+  "Sha256": "86ed9b552d63854845290ce4f1aaf0c5b92c29943424441cf84919139158f9f7",
+  "Notes": "# NetPulse v1.5.0\n\n新增原位自动更新：下载校验完成后替换当前 EXE，并自动重新启动新版。继续单 EXE 分发，无需安装器、单独更新器或运行库。\n\n- 默认每 6 小时检查 GitHub，新版在空闲且没有本次测试记录时自动下载、校验、替换与重启；可单独关闭“空闲时自动安装并重启”。监测和测速期间顺延自动安装。\n- “下载新版”改为“更新并重启”。点击后自动完成后续流程，无需选择文件位置或手动运行。当前测试记录会先自动备份为 CSV，用户设置和节点缓存继续保留。\n- 更新保持原 EXE 路径和文件名，即使文件被重命名或路径包含中文、空格也可使用。临时启动隐藏副本等待旧进程退出，校验新版的 SHA-256、大小、Windows x64 程序身份及内部版本后替换文件。\n- 等到新版界面成功启动才清理旧版备份。新版启动失败或超时时尝试恢复并启动旧版；更新目录不可写、目标只读、同一 EXE 有其他运行实例、文件被占用等情况保留旧程序并提示原因。失败后 15 分钟再自动重试，下载过程中可取消。\n- 保留 Speedtest.net 节点/IP 定期同步、测速网与 Cloudflare、自定义 HTTP 节点、测速、延迟/抖动/失败率监测、CSV 导出与新应用图标。\n\n**首次切换提示：v1.4 及更早客户端没有原位替换逻辑，需手动运行 v1.5 一次；从 v1.5 升级后续版本即可自动替换与启动。**\n",
+  "PublishedAt": "2026-10-18T11:45:52.5558591+00:00",
+  "SourceCommit": "95f48988bdf8d32b7fe6e23139701fa1f4c6ef6d"
 }
