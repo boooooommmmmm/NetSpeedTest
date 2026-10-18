@@ -6,7 +6,7 @@ using System.Security.Cryptography;
 
 namespace NetPulse.Core;
 
-public enum SpeedProtocol { BytesQuery, SpeedTestCn }
+public enum SpeedProtocol { BytesQuery, SpeedTestCn, SpeedTestNet }
 
 public sealed record SpeedOptions(Uri DownloadUri, Uri? UploadUri, int DurationSeconds = 10,
     int Connections = 4, long MaxBytesPerDirection = 256L * 1024 * 1024, bool UseProxy = false,
@@ -50,7 +50,7 @@ public sealed class SpeedTestService
             PooledConnectionLifetime = TimeSpan.FromMinutes(2)
         };
         using var http = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("NetPulse/1.2");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("NetPulse/1.4");
         http.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(options.DurationSeconds));
@@ -60,6 +60,13 @@ public sealed class SpeedTestService
         var errors = new ConcurrentQueue<string>();
         // A shared incompressible payload prevents request compression from inflating upload results.
         byte[] payload = phase == TrafficPhase.Upload ? RandomNumberGenerator.GetBytes(1024 * 1024) : [];
+        if (phase == TrafficPhase.Upload && options.Protocol == SpeedProtocol.SpeedTestNet)
+        {
+            // Legacy HTTP servers accept a content1 form field and acknowledge its wire size.
+            const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            for (var i = 0; i < payload.Length; i++) payload[i] = (byte)alphabet[payload[i] & 63];
+            "content1="u8.CopyTo(payload);
+        }
         var reportTask = ReportAsync();
         var workers = Enumerable.Range(0, options.Connections).Select(_ => WorkerAsync()).ToArray();
         try { await Task.WhenAll(workers).ConfigureAwait(false); }
@@ -99,18 +106,27 @@ public sealed class SpeedTestService
                     var sizeKey = options.Protocol == SpeedProtocol.SpeedTestCn ? "size" : "bytes";
                     var fields = query.Split('&', StringSplitOptions.RemoveEmptyEntries)
                         .Where(q => !q.Split('=')[0].Equals(sizeKey, StringComparison.OrdinalIgnoreCase));
-                    builder.Query = string.Join('&', fields.Append($"{sizeKey}={amount}").Append($"netpulse={Guid.NewGuid():N}"));
+                    if (options.Protocol != SpeedProtocol.SpeedTestNet) fields = fields.Append($"{sizeKey}={amount}");
+                    builder.Query = string.Join('&', fields.Append($"netpulse={Guid.NewGuid():N}"));
                     using var request = new HttpRequestMessage(phase == TrafficPhase.Download ? HttpMethod.Get : HttpMethod.Post, builder.Uri);
                     request.Headers.AcceptEncoding.ParseAdd("identity");
                     if (phase == TrafficPhase.Upload)
                     {
                         request.Content = new ByteArrayContent(payload, 0, (int)amount);
-                        request.Content.Headers.ContentType = new("application/octet-stream");
+                        request.Content.Headers.ContentType = new(options.Protocol == SpeedProtocol.SpeedTestNet ? "application/x-www-form-urlencoded" : "application/octet-stream");
                     }
                     using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
                     response.EnsureSuccessStatusCode();
                     if (phase == TrafficPhase.Upload)
                     {
+                        if (options.Protocol == SpeedProtocol.SpeedTestNet)
+                        {
+                            await using var acknowledgement = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+                            var answer = new byte[128];
+                            var length = await acknowledgement.ReadAtLeastAsync(answer, answer.Length, throwOnEndOfStream: false, deadline.Token).ConfigureAwait(false);
+                            if (System.Text.Encoding.ASCII.GetString(answer, 0, length).Trim() != $"size={amount}")
+                                throw new HttpRequestException("Speedtest.net 节点未确认收到完整上传数据，请更换节点。");
+                        }
                         Interlocked.Add(ref bytes, amount); // Count only POSTs acknowledged with a successful response.
                         continue;
                     }
@@ -120,6 +136,16 @@ public sealed class SpeedTestService
                         throw new HttpRequestException("下载节点返回网页、文本或压缩内容，请填写直接下载二进制数据的地址。");
                     await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
                     long received = 0;
+                    if (options.Protocol == SpeedProtocol.SpeedTestNet)
+                    {
+                        var prefixLength = (int)Math.Min(3, amount);
+                        var prefix = await stream.ReadAtLeastAsync(buffer.AsMemory(0, prefixLength), prefixLength, throwOnEndOfStream: false, deadline.Token).ConfigureAwait(false);
+                        ReadOnlySpan<byte> signature = [0xff, 0xd8, 0xff];
+                        if (prefix != prefixLength || !buffer.AsSpan(0, prefix).SequenceEqual(signature[..prefix]))
+                            throw new HttpRequestException("Speedtest.net 下载节点未返回测速 JPEG 数据，请更换节点。");
+                        received = prefix;
+                        Interlocked.Add(ref bytes, prefix);
+                    }
                     while (received < amount)
                     {
                         var count = await stream.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, amount - received)), deadline.Token).ConfigureAwait(false);

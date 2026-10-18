@@ -3,9 +3,12 @@ using System.Text.Json;
 
 namespace NetPulse.Core;
 
-public sealed record NodeSyncSettings(bool Enabled = true, int IntervalMinutes = 15, bool UseProxy = false)
+public enum NodeCatalogProvider { SpeedTestCn, SpeedTestNet }
+
+public sealed record NodeSyncSettings(bool Enabled = true, int IntervalMinutes = 15, bool UseProxy = false,
+    NodeCatalogProvider Provider = NodeCatalogProvider.SpeedTestNet)
 {
-    public bool IsValid => IntervalMinutes is 5 or 15 or 30 or 60;
+    public bool IsValid => IntervalMinutes is 5 or 15 or 30 or 60 && Enum.IsDefined(Provider);
 }
 
 public sealed class NodeSyncSchedule
@@ -36,17 +39,21 @@ public sealed class NodeSyncSchedule
     private DateTimeOffset? NextAfter(DateTimeOffset? success) => !Settings.Enabled || success == null ? null : success.Value.AddMinutes(Settings.IntervalMinutes);
 }
 
-public sealed record NodeCatalogSnapshot(DateTimeOffset SyncedAt, bool UseProxy, IReadOnlyList<RankedSpeedNode> Nodes, string? SelectedNodeId = null, int Version = 1)
+public sealed record NodeCatalogSnapshot(DateTimeOffset SyncedAt, bool UseProxy, IReadOnlyList<RankedSpeedNode> Nodes, string? SelectedNodeId = null, int Version = 1,
+    NodeCatalogProvider Provider = NodeCatalogProvider.SpeedTestCn)
 {
-    public bool IsValid => Version == 1 && Nodes is { Count: > 0 and <= 30 } && Nodes.All(n => n != null && n.Node != null &&
+    public bool IsValid => Version == 1 && Enum.IsDefined(Provider) && Nodes is { Count: > 0 and <= 30 } && Nodes.All(n => n != null && n.Node != null &&
         IsHttp(n.Node.DownloadUri) && IsHttp(n.Node.UploadUri) && IsHttp(n.Node.PingUri) &&
+        n.Node.Protocol == (Provider == NodeCatalogProvider.SpeedTestNet ? SpeedProtocol.SpeedTestNet : SpeedProtocol.SpeedTestCn) &&
         (n.IpAddresses == null || n.IpAddresses.All(ip => IPAddress.TryParse(ip, out _))));
     private static bool IsHttp(Uri? uri) => uri is { IsAbsoluteUri: true } && (uri.Scheme is "https" or "http") && string.IsNullOrEmpty(uri.UserInfo);
 }
 
-public sealed class NodeCatalogStorage(string directory)
+public sealed class NodeCatalogStorage(string directory, NodeCatalogProvider provider = NodeCatalogProvider.SpeedTestCn)
 {
     public string DirectoryPath { get; } = Path.GetFullPath(directory);
+    public NodeCatalogProvider Provider { get; } = provider;
+    private string CatalogFile => Provider == NodeCatalogProvider.SpeedTestNet ? "nodes-speedtest-net-v1.json" : "nodes-v1.json";
     public NodeSyncSettings LoadSettings()
     {
         var settings = Read<NodeSyncSettings>("settings.json");
@@ -54,8 +61,8 @@ public sealed class NodeCatalogStorage(string directory)
     }
     public NodeCatalogSnapshot? LoadCatalog()
     {
-        var catalog = Read<NodeCatalogSnapshot>("nodes-v1.json");
-        return catalog is { IsValid: true } ? catalog : null;
+        var catalog = Read<NodeCatalogSnapshot>(CatalogFile);
+        return catalog is { IsValid: true } && catalog.Provider == Provider ? catalog : null;
     }
     public void SaveSettings(NodeSyncSettings settings)
     {
@@ -64,8 +71,8 @@ public sealed class NodeCatalogStorage(string directory)
     }
     public void SaveCatalog(NodeCatalogSnapshot catalog)
     {
-        if (!catalog.IsValid) throw new ArgumentException("无效的节点缓存。");
-        Write("nodes-v1.json", catalog);
+        if (!catalog.IsValid || catalog.Provider != Provider) throw new ArgumentException("无效的节点缓存或节点源不匹配。");
+        Write(CatalogFile, catalog);
     }
     private T? Read<T>(string name)
     {

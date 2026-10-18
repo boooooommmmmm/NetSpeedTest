@@ -7,9 +7,10 @@ using System.Text.Json;
 namespace NetPulse.Core;
 
 public sealed record SpeedTestNode(string Id, string Name, string Province, string City, string Operator,
-    Uri DownloadUri, Uri UploadUri, Uri PingUri, double Distance)
+    Uri DownloadUri, Uri UploadUri, Uri PingUri, double Distance, SpeedProtocol Protocol = SpeedProtocol.SpeedTestCn)
 {
-    public string DisplayName => $"{Province} {City} · {Operator} · {Name}";
+    public string DisplayName => string.Join(" · ", new[] { string.Join(" ", new[] { Province, City }.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct()), Operator, Name }
+        .Where(s => !string.IsNullOrWhiteSpace(s)).Distinct());
     public override string ToString() => DisplayName;
 }
 
@@ -72,7 +73,15 @@ public sealed class SpeedTestCnClient
                 timeout.CancelAfter(TimeSpan.FromMilliseconds(2500));
                 var watch = Stopwatch.StartNew();
                 using var response = await http.GetAsync(node.PingUri, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-                return new RankedSpeedNode(node, response.IsSuccessStatusCode ? watch.Elapsed.TotalMilliseconds : null);
+                var healthy = response.IsSuccessStatusCode;
+                if (healthy && node.Protocol == SpeedProtocol.SpeedTestNet)
+                {
+                    await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                    var buffer = new byte[32];
+                    var count = await stream.ReadAtLeastAsync(buffer, 10, throwOnEndOfStream: false, timeout.Token).ConfigureAwait(false);
+                    healthy = Encoding.ASCII.GetString(buffer, 0, count).Trim() == "test=test";
+                }
+                return new RankedSpeedNode(node, healthy ? watch.Elapsed.TotalMilliseconds : null);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception e) when (e is HttpRequestException or IOException or OperationCanceledException)
@@ -134,7 +143,7 @@ public sealed class SpeedTestCnClient
             ConnectTimeout = TimeSpan.FromSeconds(3),
             AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
         }) { Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("NetPulse/1.2");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("NetPulse/1.4");
         client.DefaultRequestHeaders.CacheControl = new() { NoCache = true, NoStore = true };
         return client;
     }

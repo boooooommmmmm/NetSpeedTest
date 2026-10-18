@@ -30,14 +30,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private LatencyStatistics _stats = new();
     private CancellationTokenSource? _monitorCts, _speedCts, _nodeCts;
     private bool _ready, _loadingNodes, _nodesUseProxy;
-    private readonly NodeCatalogStorage _nodeStorage;
+    private NodeCatalogStorage _nodeStorage;
     private readonly Func<bool, CancellationToken, Task<IReadOnlyList<SpeedTestNode>>> _fetchNodeCatalog;
     private NodeCatalogSnapshot? _nodeSnapshot;
     private NodeSyncSchedule _syncSchedule;
     private readonly DispatcherTimer _syncTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private bool _applyingCatalog;
     private string? _syncMessage;
-    private string _nodeStatus = "自动同步测速网节点；也可点击立即同步后手动选择。";
+    private string _nodeStatus = "自动同步 Speedtest.net 节点；也可点击立即同步后手动选择。";
     private string _activeSourceLabel = "";
     private Task? _monitorTask;
     private TrafficPhase _phase;
@@ -54,12 +54,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
     public ObservableCollection<SampleRow> RecentSamples { get; } = [];
     public ObservableCollection<SyncedIpRow> SyncedIpRows { get; } = [];
-    public string SyncedNodesHeader => $"已同步的测速 IP 列表（{SyncedIpRows.Count} 个节点）";
+    private bool IsNodeSource => SourceBox.SelectedIndex is 0 or 3;
+    private string CatalogSourceName => _nodeStorage.Provider == NodeCatalogProvider.SpeedTestNet ? "Speedtest.net" : "测速网 SpeedTest.cn";
+    public string NodePickerLabel => CatalogSourceName + " 节点 · 自动检测可达性，也可手动选择";
+    public string AutoSyncLabel => "自动同步 " + CatalogSourceName + " 节点 / IP";
+    public string SyncedNodesHeader => $"{CatalogSourceName} 已同步的测速 IP 列表（{SyncedIpRows.Count} 个节点）";
     public string SyncStatus
     {
         get
         {
-            var last = _nodeSnapshot == null ? "尚未成功同步" : $"上次成功 {_nodeSnapshot.SyncedAt.LocalDateTime:MM-dd HH:mm:ss} · {_nodeSnapshot.Nodes.Count} 个节点 / {_nodeSnapshot.Nodes.SelectMany(n => n.IpAddresses ?? []).Distinct().Count()} 个 IP";
+            var last = CatalogSourceName + " · " + (_nodeSnapshot == null ? "尚未成功同步" : $"上次成功 {_nodeSnapshot.SyncedAt.LocalDateTime:MM-dd HH:mm:ss} · {_nodeSnapshot.Nodes.Count} 个节点 / {_nodeSnapshot.Nodes.SelectMany(n => n.IpAddresses ?? []).Distinct().Count()} 个 IP");
             if (_loadingNodes) return last + " · 正在同步…";
             if (!string.IsNullOrEmpty(_syncMessage)) return last + " · " + _syncMessage;
             if (!_syncSchedule.Settings.Enabled) return last + " · 自动同步已关闭";
@@ -71,7 +75,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public bool SpeedSettingsEnabled => _speedCts == null && !_loadingNodes && _updateDownloadCts == null;
     public bool SourceSettingsEnabled => _speedCts == null && !_loadingNodes && _updateDownloadCts == null;
     public bool EndpointsReadOnly => SourceBox.SelectedIndex != 2;
-    public Visibility NodePickerVisibility => SourceBox.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public Visibility NodePickerVisibility => IsNodeSource ? Visibility.Visible : Visibility.Collapsed;
     public string NodeStatus { get => _nodeStatus; set => Set(ref _nodeStatus, value); }
     public bool CanClear => _monitorCts == null && _speedCts == null && _samples.Count > 0;
     public bool HasSamples => _samples.Count > 0;
@@ -97,14 +101,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Func<bool, CancellationToken, Task<IReadOnlyList<SpeedTestNode>>>? nodeCatalogFetcher = null,
         Func<CancellationToken, Task<GitHubReleaseInfo?>>? releaseChecker = null)
     {
-        _fetchNodeCatalog = nodeCatalogFetcher ?? new SpeedTestCnClient().GetNodesAsync;
-        _nodeStorage = new(dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetPulse"));
-        var syncSettings = _nodeStorage.LoadSettings();
+        var directory = dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetPulse");
+        var syncSettings = new NodeCatalogStorage(directory).LoadSettings();
+        _nodeStorage = new(directory, syncSettings.Provider);
+        _fetchNodeCatalog = nodeCatalogFetcher ?? ((proxy, token) => _nodeStorage.Provider == NodeCatalogProvider.SpeedTestNet
+            ? new SpeedTestNetClient().GetNodesAsync(proxy, token) : new SpeedTestCnClient().GetNodesAsync(proxy, token));
         _nodeSnapshot = _nodeStorage.LoadCatalog();
         _syncSchedule = new(syncSettings, _nodeSnapshot?.SyncedAt);
         if (_nodeSnapshot != null && _nodeSnapshot.UseProxy != syncSettings.UseProxy) _syncSchedule.RequestNow();
         InitializeComponent();
         DataContext = this;
+        SourceBox.SelectedIndex = syncSettings.Provider == NodeCatalogProvider.SpeedTestNet ? 3 : 0;
         AutoSyncBox.IsChecked = syncSettings.Enabled;
         SyncIntervalBox.SelectedIndex = Array.IndexOf(new[] { 5, 15, 30, 60 }, syncSettings.IntervalMinutes);
         ProxyBox.IsChecked = syncSettings.UseProxy;
@@ -152,14 +159,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private static string Number(double value) => value.ToString(value >= 1000 ? "F0" : "F1", CultureInfo.CurrentCulture);
 
     private void Source_Changed(object sender, SelectionChangedEventArgs e)
-    { if (_ready) { ResetSpeedReadings(); UpdateSourceUi(); } }
+    {
+        if (!_ready) return;
+        if (IsNodeSource) SwitchCatalog(SourceBox.SelectedIndex == 3 ? NodeCatalogProvider.SpeedTestNet : NodeCatalogProvider.SpeedTestCn);
+        ResetSpeedReadings(); UpdateSourceUi();
+    }
+
+    private void SwitchCatalog(NodeCatalogProvider provider)
+    {
+        if (_nodeStorage.Provider == provider) return;
+        var settings = _syncSchedule.Settings with { Provider = provider };
+        _nodeStorage = new(_nodeStorage.DirectoryPath, provider);
+        _nodeSnapshot = _nodeStorage.LoadCatalog();
+        _syncSchedule = new(settings, _nodeSnapshot?.SyncedAt);
+        if (_nodeSnapshot != null && _nodeSnapshot.UseProxy != settings.UseProxy) _syncSchedule.RequestNow();
+        _syncMessage = null;
+        _applyingCatalog = true;
+        try { NodeBox.ItemsSource = null; }
+        finally { _applyingCatalog = false; }
+        SyncedIpRows.Clear();
+        _nodesUseProxy = settings.UseProxy;
+        if (_nodeSnapshot != null) ApplyCatalog(_nodeSnapshot);
+        try { _nodeStorage.SaveSettings(settings); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _syncMessage = "节点源设置未能保存：" + ex.Message; }
+        Notify(nameof(NodePickerLabel), nameof(AutoSyncLabel), nameof(SyncedNodesHeader), nameof(SyncStatus));
+    }
 
     private void UpdateSourceUi()
     {
-        if (SourceBox.SelectedIndex == 0)
+        if (IsNodeSource)
         {
             DownloadUrlBox.Text = UploadUrlBox.Text = "";
-            NodeStatus = "自动同步测速网节点；也可点击立即同步后手动选择。";
+            NodeStatus = $"自动同步 {CatalogSourceName} 节点；也可点击立即同步后手动选择。";
             ApplySelectedNode();
         }
         else if (SourceBox.SelectedIndex == 1)
@@ -174,7 +205,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void Node_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (_ready && !_applyingCatalog && SourceBox.SelectedIndex == 0)
+        if (_ready && !_applyingCatalog && IsNodeSource)
         {
             ResetSpeedReadings(); ApplySelectedNode();
             if (_nodeSnapshot != null && NodeBox.SelectedItem is RankedSpeedNode selected)
@@ -211,7 +242,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void SyncSettings_Changed(object sender, RoutedEventArgs e)
     {
         if (!_ready) return;
-        var settings = new NodeSyncSettings(AutoSyncBox.IsChecked == true, Selected(SyncIntervalBox), ProxyBox.IsChecked == true);
+        var settings = new NodeSyncSettings(AutoSyncBox.IsChecked == true, Selected(SyncIntervalBox), ProxyBox.IsChecked == true, _nodeStorage.Provider);
         var proxyChanged = settings.UseProxy != _syncSchedule.Settings.UseProxy;
         _syncSchedule.Configure(settings);
         if (proxyChanged) _syncSchedule.RequestNow();
@@ -247,7 +278,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         foreach (var node in snapshot.Nodes)
             SyncedIpRows.Add(new(node.Node.DisplayName, node.Node.DownloadUri.DnsSafeHost, node.IpText,
                 node.LatencyMs is { } latency ? $"{latency:F0} ms" : "不可达"));
-        if (SourceBox.SelectedIndex == 0) ApplySelectedNode();
+        if (IsNodeSource) ApplySelectedNode();
         Notify(nameof(SyncedNodesHeader), nameof(SyncStatus));
     }
 
@@ -283,9 +314,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var ranked = await client.RankNodesAsync(nodes, useProxy, token);
             var resolved = await NodeIpResolver.ResolveAsync(ranked, token);
             token.ThrowIfCancellationRequested();
-            if (resolved.Count == 0) throw new HttpRequestException("测速网未返回有效节点，已保留上次缓存。");
+            if (resolved.Count == 0) throw new HttpRequestException($"{CatalogSourceName} 未返回有效节点，已保留上次缓存。");
             var completedAt = DateTimeOffset.UtcNow;
-            ApplyCatalog(new(completedAt, useProxy, resolved));
+            ApplyCatalog(new(completedAt, useProxy, resolved, Provider: _nodeStorage.Provider));
             _syncSchedule.Succeeded(completedAt);
             SaveCatalog();
         }
@@ -314,20 +345,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async Task<(SpeedOptions Options, string Label)> CreateSpeedOptionsAsync()
     {
         var source = SourceBox.SelectedIndex;
-        if (source == 0 && (NodeBox.SelectedItem == null || _nodesUseProxy != (ProxyBox.IsChecked == true)))
+        if (IsNodeSource && (NodeBox.SelectedItem == null || _nodesUseProxy != (ProxyBox.IsChecked == true)))
         {
             try { await LoadNodesAsync(); }
             catch (Exception ex) when (ex is not OperationCanceledException && NodeBox.SelectedItem != null)
             { /* An explicit speed test can continue with the retained catalog. */ }
         }
-        if (source == 0 && NodeBox.SelectedItem == null)
-            throw new InvalidOperationException("没有可用的测速网节点，请先同步或更换测速源。");
+        if (IsNodeSource && NodeBox.SelectedItem == null)
+            throw new InvalidOperationException($"没有可用的 {CatalogSourceName} 节点，请先同步或更换测速源。");
         var downloadUri = SpeedOptions.ValidateUri(new Uri(DownloadUrlBox.Text.Trim(), UriKind.Absolute));
         var uploadUri = string.IsNullOrWhiteSpace(UploadUrlBox.Text) ? null : SpeedOptions.ValidateUri(new Uri(UploadUrlBox.Text.Trim(), UriKind.Absolute));
         var options = new SpeedOptions(downloadUri, uploadUri, Selected(DurationBox), Selected(ConnectionsBox), Selected(LimitBox) * 1024L * 1024,
-            ProxyBox.IsChecked == true, source == 0 ? SpeedProtocol.SpeedTestCn : SpeedProtocol.BytesQuery);
+            ProxyBox.IsChecked == true, IsNodeSource && NodeBox.SelectedItem is RankedSpeedNode node ? node.Node.Protocol : SpeedProtocol.BytesQuery);
         options.Validate();
-        var label = source == 0 && NodeBox.SelectedItem is RankedSpeedNode selected ? "测速网 · " + selected.Node.DisplayName
+        var label = IsNodeSource && NodeBox.SelectedItem is RankedSpeedNode selected ? CatalogSourceName + " · " + selected.Node.DisplayName
             : source == 1 ? "Cloudflare" : "自定义 · " + downloadUri.Host;
         return (options, label);
     }
@@ -572,14 +603,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ShowError(Exception ex)
     { StatusText = "操作未完成"; StatusDetail = ex.GetBaseException().Message; }
 
-    private async Task VerifySynchronizationAsync(string outputDirectory, Dictionary<string, object> report)
+    private async Task VerifySynchronizationAsync(string outputDirectory, Dictionary<string, object> report, NodeCatalogProvider provider)
     {
-        var storage = new NodeCatalogStorage(Path.Combine(outputDirectory, "sync-simulation"));
-        var nodeA = new SpeedTestNode("local-a", "回环测试 A", "", "", "", new("http://127.0.0.1:9/download"), new("http://127.0.0.1:9/upload"), new("http://127.0.0.1:9/hello"), 1);
+        var storage = new NodeCatalogStorage(Path.Combine(outputDirectory, "sync-simulation-" + provider), provider);
+        var protocol = provider == NodeCatalogProvider.SpeedTestNet ? SpeedProtocol.SpeedTestNet : SpeedProtocol.SpeedTestCn;
+        var nodeA = new SpeedTestNode("local-a", "回环测试 A", "", "", "", new("http://127.0.0.1:9/download"), new("http://127.0.0.1:9/upload"), new("http://127.0.0.1:9/hello"), 1, protocol);
         var nodeB = nodeA with { Id = "local-b", Name = "回环测试 B" };
         var snapshot = new NodeCatalogSnapshot(DateTimeOffset.UtcNow.AddMinutes(-20), false,
-            [new(nodeA, 1, ["127.0.0.1"]), new(nodeB, 2, ["127.0.0.1"])], "local-b");
-        storage.SaveSettings(new()); storage.SaveCatalog(snapshot);
+            [new(nodeA, 1, ["127.0.0.1"]), new(nodeB, 2, ["127.0.0.1"])], "local-b", Provider: provider);
+        storage.SaveSettings(new(Provider: provider)); storage.SaveCatalog(snapshot);
         var calls = 0;
         var simulateFailure = true;
         Task<IReadOnlyList<SpeedTestNode>> Fetch(bool proxy, CancellationToken token)
@@ -623,12 +655,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     throw new InvalidOperationException("Sync settings and nodes did not survive reopening.");
             }
             finally { reopened.Close(); }
-            report["periodicSynchronization"] = new { CacheRestore = true, FailureRetention = true, FailureBackoff = true, DeferralDuringSpeedTest = true, SelectionPreserved = true, ResultsPreserved = true, SettingsRestore = true };
+            var otherIndex = provider == NodeCatalogProvider.SpeedTestNet ? 0 : 3;
+            var originalIndex = provider == NodeCatalogProvider.SpeedTestNet ? 3 : 0;
+            window.SourceBox.SelectedIndex = otherIndex;
+            if (window.NodeBox.Items.Count != 0 || window._nodeSnapshot != null || window.SyncedIpRows.Count != 0)
+                throw new InvalidOperationException("Switching providers retained nodes from another catalog.");
+            window.SourceBox.SelectedIndex = originalIndex;
+            if (window.NodeBox.SelectedItem is not RankedSpeedNode { Node.Id: "local-b" } || window._nodeStorage.Provider != provider)
+                throw new InvalidOperationException("Switching back did not restore the provider cache.");
+            report["periodicSynchronization" + provider] = new { CacheRestore = true, FailureRetention = true, FailureBackoff = true, DeferralDuringSpeedTest = true, SelectionPreserved = true, ResultsPreserved = true, SettingsRestore = true, ProviderIsolation = true };
         }
         finally { window.Close(); }
     }
 
-    public async Task RunSmokeTestAsync(string outputDirectory, bool online, bool speedTestCn = false, bool checkGitHub = false)
+    public async Task RunSmokeTestAsync(string outputDirectory, bool online, bool speedTestCn = false, bool checkGitHub = false, bool speedTestNet = false)
     {
         Directory.CreateDirectory(outputDirectory);
         var report = new Dictionary<string, object>();
@@ -636,7 +676,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             await Task.Delay(600);
             await VerifyUpdateWorkflowAsync(outputDirectory, report);
-            await VerifySynchronizationAsync(outputDirectory, report);
+            await VerifySynchronizationAsync(outputDirectory, report, NodeCatalogProvider.SpeedTestCn);
+            await VerifySynchronizationAsync(outputDirectory, report, NodeCatalogProvider.SpeedTestNet);
             SaveScreenshot(Path.Combine(outputDirectory, "idle.png"));
             SourceBox.SelectedIndex = 1;
             if (!EndpointsReadOnly || !DownloadUrlBox.Text.Contains("cloudflare.com")) throw new InvalidOperationException("Cloudflare preset failed.");
@@ -644,6 +685,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             if (EndpointsReadOnly) throw new InvalidOperationException("Custom source should be editable.");
             SourceBox.SelectedIndex = 0;
             if (!EndpointsReadOnly || NodePickerVisibility != Visibility.Visible) throw new InvalidOperationException("SpeedTest.cn preset failed.");
+            SourceBox.SelectedIndex = 3;
+            if (!EndpointsReadOnly || NodePickerVisibility != Visibility.Visible || _nodeStorage.Provider != NodeCatalogProvider.SpeedTestNet)
+                throw new InvalidOperationException("Speedtest.net preset failed.");
             report["sourceSelection"] = "passed";
             TargetBox.Text = "127.0.0.1";
             StartMonitor();
@@ -663,12 +707,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             Clear_Click(this, new());
             if (HasSamples || DownloadValue != "—") throw new InvalidOperationException("Clear failed.");
             report["clear"] = "passed";
-            if (online || speedTestCn)
+            if (online || speedTestCn || speedTestNet)
             {
                 TargetBox.Text = "1.1.1.1";
                 ModeBox.SelectedIndex = 1;
-                SourceBox.SelectedIndex = speedTestCn ? 0 : 1;
-                if (speedTestCn)
+                SourceBox.SelectedIndex = speedTestNet ? 3 : speedTestCn ? 0 : 1;
+                if (speedTestCn || speedTestNet)
                 {
                     var loading = LoadNodesAsync();
                     if (_nodeCts == null || SourceSettingsEnabled) throw new InvalidOperationException("Node loading should lock source settings.");
@@ -679,7 +723,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     report["nodeCancellation"] = "passed";
                 }
                 var setup = await CreateSpeedOptionsAsync();
-                if (speedTestCn)
+                if (speedTestCn || speedTestNet)
                 {
                     if (_nodeSnapshot == null || !SyncedIpRows.Any(r => r.Addresses != "未解析") || _nodeStorage.LoadCatalog()?.Nodes.Count != _nodeSnapshot.Nodes.Count)
                         throw new InvalidOperationException("Live node IP synchronization or cache save failed.");

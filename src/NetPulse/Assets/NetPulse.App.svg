@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="NetPulse 网络脉搏">
+  <title>NetPulse 网络脉搏</title>
+  <defs><linearGradient id="paint0" x1="0.15" y1="0" x2="0.85" y2="1"><stop offset="0" stop-color="#1B3049" stop-opacity="1" /><stop offset="0.55" stop-color="#101E33" stop-opacity="1" /><stop offset="1" stop-color="#0A1527" stop-opacity="1" /></linearGradient><linearGradient id="paint1" x1="0" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#526A83" stop-opacity="1" /><stop offset="0.6" stop-color="#21354D" stop-opacity="1" /><stop offset="1" stop-color="#162A41" stop-opacity="1" /></linearGradient><linearGradient id="paint2" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#35CDA2" stop-opacity="1" /><stop offset="0.55" stop-color="#67F2CA" stop-opacity="1" /><stop offset="1" stop-color="#60D1EB" stop-opacity="1" /></linearGradient><linearGradient id="paint3" x1="0" y1="0" x2="1" y2="0.25"><stop offset="0" stop-color="#E4FFF5" stop-opacity="1" /><stop offset="0.55" stop-color="#A0F5E2" stop-opacity="1" /><stop offset="1" stop-color="#79AFFF" stop-opacity="1" /></linearGradient></defs>
+  <path d="M0,0L256,0 256,256 0,256z" fill="#FFFFFF" fill-opacity="0"  />
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#paint0)" stroke="url(#paint1)" stroke-width="2" stroke-linecap="butt" stroke-linejoin="miter" />
+  <path d="M54,154A78,78,0,1,1,204,112" fill="none" stroke="url(#paint2)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M54,154L86,154 107,119 132,183 155,147 199,147" fill="none" stroke="url(#paint3)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

@@ -79,6 +79,55 @@ await Run("SpeedTest.cn catalog: public nodes only, duplicate and invalid URL fi
     Throws<HttpRequestException>(() => SpeedTestCnClient.ParseNodes("{\"data\":\"invalid\"}"));
     return Task.CompletedTask;
 });
+await Run("Speedtest.net catalogs select HTTPS aliases, filter invalid nodes and support XML", () =>
+{
+    var parsed = SpeedTestNetClient.ParseNodes("""
+    [
+      {"id":"1","url":"http://old.example:8080/speedtest/upload.php","host":"tls.example:8443","sponsor":"Example ISP","country":"China","name":"Shanghai","distance":20,"https_functional":1},
+      {"id":"1","url":"https://duplicate.example/speedtest/upload.php"},
+      {"id":"2","url":"https://example.com/speedtest/upload.php","https_functional":0},
+      {"id":"3","url":"file:///C:/upload.php"},
+      {"id":"4","url":"https://user:pass@example.com/speedtest/upload.php"},
+      {"id":"5","url":"https://example.com/speedtest/upload.php","host":"example.com/other-path"},
+      {"id":"6","url":"https://example.com/login"},
+      {"id":"9","url":"https://example.com/speedtest/upload.php","https_functional":false},
+      {"id":"7","url":"http://fallback.example/speedtest/upload.php","distance":1}
+    ]
+    """);
+    Check(parsed.Count == 2 && parsed[0].Id == "7", "Invalid or duplicate server accepted, or distance sort failed");
+    var node = parsed.Single(n => n.Id == "1");
+    Check(node.Protocol == SpeedProtocol.SpeedTestNet && node.UploadUri.AbsoluteUri == "https://tls.example:8443/speedtest/upload.php" &&
+        node.DownloadUri.AbsoluteUri == "https://tls.example:8443/speedtest/random2000x2000.jpg" && node.PingUri.AbsolutePath.EndsWith("latency.txt"), "HTTPS alias/protocol mapping incorrect");
+    Check(parsed[0].UploadUri.Port == 443, "Default HTTP port was not upgraded");
+    var xml = SpeedTestNetClient.ParseNodes("<settings><servers><server id='8' url='http://example.com:8080/speedtest/upload.php' host='example.com:8080' sponsor='XML ISP' /></servers></settings>");
+    Check(xml.Single().Id == "8" && xml[0].UploadUri.Scheme == "https", "XML fallback mapping failed");
+    Throws<HttpRequestException>(() => SpeedTestNetClient.ParseNodes("<!DOCTYPE settings [<!ENTITY x SYSTEM 'file:///C:/example'>]><settings>&x;</settings>"));
+    Throws<HttpRequestException>(() => SpeedTestNetClient.ParseNodes("<html>not a catalog"));
+    Throws<HttpRequestException>(() => SpeedTestNetClient.ParseNodes("{\"error\":true}"));
+    return Task.CompletedTask;
+});
+await Run("Speedtest.net download reads JPEG bytes without a bytes/size parameter and respects a tiny final remainder", async () =>
+{
+    const long cap = 32768 + 2;
+    var result = await new SpeedTestService().RunPhaseAsync(new(server.Uri("net-down"), null, 3, 4, cap, Protocol: SpeedProtocol.SpeedTestNet), TrafficPhase.Download, null, default);
+    Check(result.Bytes == cap && result.ReachedLimit && result.Errors.Count == 0, "JPEG byte accounting or query mapping failed");
+    await ThrowsAsync<HttpRequestException>(() => new SpeedTestService().RunPhaseAsync(new(server.Uri("down"), null, 2, 1, cap, Protocol: SpeedProtocol.SpeedTestNet), TrafficPhase.Download, null, default));
+});
+await Run("Speedtest.net uploads require a matching server acknowledgement", async () =>
+{
+    const long cap = 1024 * 1024 + 19;
+    var result = await new SpeedTestService().RunPhaseAsync(new(server.Uri("net-down"), server.Uri("net-up"), 3, 4, cap, Protocol: SpeedProtocol.SpeedTestNet), TrafficPhase.Upload, null, default);
+    Check(result.Bytes == cap && result.Errors.Count == 0 && result.ReachedLimit, "Acknowledged upload accounting failed");
+    foreach (var path in new[] { "net-bad-ack", "net-html-ack" })
+        await ThrowsAsync<HttpRequestException>(() => new SpeedTestService().RunPhaseAsync(new(server.Uri("net-down"), server.Uri(path), 2, 1, 1024, Protocol: SpeedProtocol.SpeedTestNet), TrafficPhase.Upload, null, default));
+});
+await Run("Speedtest.net ranking rejects successful HTTP pages without the latency signature", async () =>
+{
+    var healthy = new SpeedTestNode("1", "local", "", "", "", server.Uri("net-down"), server.Uri("net-up"), server.Uri("net-ping"), 1, SpeedProtocol.SpeedTestNet);
+    var captive = healthy with { Id = "2", PingUri = server.Uri("net-html-ack") };
+    var ranked = await new SpeedTestCnClient().RankNodesAsync([captive, healthy], false, default);
+    Check(ranked[0].Node.Id == "1" && ranked[0].LatencyMs.HasValue && !ranked[1].LatencyMs.HasValue, "Captive page incorrectly marked reachable");
+});
 await Run("SpeedTest.cn node ranking keeps reachable nodes ahead of failed nodes", async () =>
 {
     var healthy = new SpeedTestNode("1", "local", "", "", "", server.Uri("down"), server.Uri("up"), server.Uri("hello"), 1);
@@ -152,6 +201,35 @@ await Run("Node IP sync resolves real loopback DNS and supports cancellation", a
     Check(named.Single().IpAddresses is { Count: > 0 }, "Hostname was not resolved");
     using var canceled = new CancellationTokenSource(); canceled.Cancel();
     await ThrowsAsync<OperationCanceledException>(() => NodeIpResolver.ResolveAsync([new(node, 1)], canceled.Token));
+});
+await Run("Provider caches are isolated and legacy settings/cache remain readable", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "NetPulse-provider-test-" + Guid.NewGuid().ToString("N"));
+    var cn = new NodeCatalogStorage(directory);
+    var net = new NodeCatalogStorage(directory, NodeCatalogProvider.SpeedTestNet);
+    try
+    {
+        var node = new SpeedTestNode("same-id", "CN", "", "", "", server.Uri("down"), server.Uri("up"), server.Uri("hello"), 1);
+        cn.SaveCatalog(new(DateTimeOffset.UtcNow, false, [new(node, 1)]));
+        var netNode = node with { Name = "NET", Protocol = SpeedProtocol.SpeedTestNet };
+        net.SaveCatalog(new(DateTimeOffset.UtcNow, false, [new(netNode, 2)], Provider: NodeCatalogProvider.SpeedTestNet));
+        Check(cn.LoadCatalog()?.Nodes.Single().Node.Name == "CN" && net.LoadCatalog()?.Nodes.Single().Node.Name == "NET", "Provider cache collision");
+        Throws<ArgumentException>(() => net.SaveCatalog(cn.LoadCatalog()!));
+        File.WriteAllText(Path.Combine(directory, "settings.json"), "{\"Enabled\":false,\"IntervalMinutes\":30,\"UseProxy\":true}");
+        Check(net.LoadSettings() == new NodeSyncSettings(false, 30, true, NodeCatalogProvider.SpeedTestNet), "Legacy settings did not preserve options with new default provider");
+        var legacy = File.ReadAllText(Path.Combine(directory, "nodes-v1.json"));
+        var legacyObject = System.Text.Json.Nodes.JsonNode.Parse(legacy)!.AsObject();
+        legacyObject.Remove("Provider");
+        legacyObject["Nodes"]![0]!["Node"]!.AsObject().Remove("Protocol");
+        File.WriteAllText(Path.Combine(directory, "nodes-v1.json"), legacyObject.ToJsonString());
+        Check(cn.LoadCatalog()?.Nodes[0].Node.Protocol == SpeedProtocol.SpeedTestCn, "Legacy node cache not restored");
+    }
+    finally
+    {
+        foreach (var name in new[] { "nodes-v1.json", "nodes-speedtest-net-v1.json", "settings.json" }) File.Delete(Path.Combine(directory, name));
+        if (Directory.Exists(directory)) Directory.Delete(directory);
+    }
+    return Task.CompletedTask;
 });
 await Run("Small download responses continue until actual traffic cap", async () =>
 {
@@ -324,7 +402,7 @@ if (failed == 0 && args.Contains("--verify-github"))
         var release = await client.CheckAsync(default) ?? throw new Exception("No public GitHub release");
         var project = System.Xml.Linq.XDocument.Load("src/NetPulse/NetPulse.csproj");
         var current = Version.Parse(project.Descendants("Version").Single().Value);
-        Check(release.Version == current.ToString(3) && release.IsNewerThan(new Version(1, 2, 0)) && !release.IsNewerThan(current), "Published version or old-client upgrade detection mismatch");
+        Check(release.Version == current.ToString(3) && release.IsNewerThan(new Version(1, 2, 0)) && release.IsNewerThan(new Version(1, 3, 0)) && !release.IsNewerThan(current), "Published version or old-client upgrade detection mismatch");
         Directory.CreateDirectory("artifacts/github-client");
         await client.DownloadAsync(release, "artifacts/github-client/NetPulse.exe", null, default);
         File.WriteAllText("artifacts/github-client/verification.json", JsonSerializer.Serialize(new { release.Version, release.Size, release.Sha256, OldClientDetectsUpdate = true, CurrentClientIsLatest = true, DownloadVerified = true }, new JsonSerializerOptions { WriteIndented = true }));
@@ -413,6 +491,8 @@ sealed class LocalServer : IAsyncDisposable
                 if (parts.Length < 2) return;
                 var uri = new Uri("http://localhost" + parts[1]);
                 var path = uri.AbsolutePath;
+                if (path.StartsWith("/net-") && (uri.Query.Contains("bytes=") || uri.Query.Contains("size=")))
+                { await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), token); return; }
                 if (path == "/stall") { await Task.Delay(Timeout.Infinite, token); return; }
                 var lengthLine = lines.FirstOrDefault(l => l.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase));
                 var length = lengthLine == null ? 0 : int.Parse(lengthLine.Split(':')[1].Trim());
@@ -425,12 +505,22 @@ sealed class LocalServer : IAsyncDisposable
                     remaining -= n;
                 }
                 if (path == "/up") Interlocked.Add(ref _uploadBytes, length);
+                if (path is "/net-up" or "/net-bad-ack" or "/net-html-ack" or "/net-ping")
+                {
+                    var answer = path switch { "/net-ping" => "test=test\n", "/net-bad-ack" => "size=0\n", "/net-html-ack" => "<html>login</html>", _ => $"size={length}\n" };
+                    if (path == "/net-up" && !lines.Any(l => l.Equals("Content-Type: application/x-www-form-urlencoded", StringComparison.OrdinalIgnoreCase))) answer = "wrong upload type";
+                    var body = Encoding.ASCII.GetBytes(answer);
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n"), token);
+                    await stream.WriteAsync(body, token);
+                    return;
+                }
                 if (path is "/fail" or "/reject")
                 { await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), token); return; }
                 var parameter = path == "/cn-down" ? "size=" : "bytes=";
                 var bytesField = uri.Query.TrimStart('?').Split('&').SingleOrDefault(f => f.StartsWith(parameter));
                 var amount = bytesField == null ? 0 : int.Parse(bytesField.Split('=')[1]);
                 if (path == "/small") amount = Math.Min(1024, amount);
+                if (path == "/net-down") { amount = 8192; buffer[0] = 0xff; buffer[1] = 0xd8; buffer[2] = 0xff; }
                 if (path == "/empty" || path == "/up") amount = 0;
                 var contentType = path == "/html" ? "text/html" : "application/octet-stream";
                 await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: {contentType}\r\nContent-Length: {amount}\r\nConnection: close\r\n\r\n"), token);

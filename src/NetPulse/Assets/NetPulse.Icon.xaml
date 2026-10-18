@@ -1,0 +1,60 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Canonical vector artwork. Run tools/build-icon.ps1 after changing it. -->
+  <DrawingImage x:Key="NetPulseIcon">
+    <DrawingImage.Drawing>
+      <DrawingGroup>
+        <GeometryDrawing Brush="Transparent" Geometry="M 0,0 H 256 V 256 H 0 Z" />
+        <GeometryDrawing>
+          <GeometryDrawing.Geometry>
+            <RectangleGeometry Rect="8,8,240,240" RadiusX="54" RadiusY="54" />
+          </GeometryDrawing.Geometry>
+          <GeometryDrawing.Brush>
+            <LinearGradientBrush StartPoint="0.15,0" EndPoint="0.85,1">
+              <GradientStop Color="#1B3049" Offset="0" />
+              <GradientStop Color="#101E33" Offset="0.55" />
+              <GradientStop Color="#0A1527" Offset="1" />
+            </LinearGradientBrush>
+          </GeometryDrawing.Brush>
+          <GeometryDrawing.Pen>
+            <Pen Thickness="2">
+              <Pen.Brush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0.7,1">
+                  <GradientStop Color="#526A83" Offset="0" />
+                  <GradientStop Color="#21354D" Offset="0.6" />
+                  <GradientStop Color="#162A41" Offset="1" />
+                </LinearGradientBrush>
+              </Pen.Brush>
+            </Pen>
+          </GeometryDrawing.Pen>
+        </GeometryDrawing>
+        <GeometryDrawing Geometry="M 54,154 A 78,78 0 1 1 204,112">
+          <GeometryDrawing.Pen>
+            <Pen Thickness="18" StartLineCap="Round" EndLineCap="Round" LineJoin="Round">
+              <Pen.Brush>
+                <LinearGradientBrush StartPoint="0,1" EndPoint="1,0">
+                  <GradientStop Color="#35CDA2" Offset="0" />
+                  <GradientStop Color="#67F2CA" Offset="0.55" />
+                  <GradientStop Color="#60D1EB" Offset="1" />
+                </LinearGradientBrush>
+              </Pen.Brush>
+            </Pen>
+          </GeometryDrawing.Pen>
+        </GeometryDrawing>
+        <GeometryDrawing Geometry="M 54,154 H 86 L 107,119 L 132,183 L 155,147 H 199">
+          <GeometryDrawing.Pen>
+            <Pen Thickness="16" StartLineCap="Round" EndLineCap="Round" LineJoin="Round">
+              <Pen.Brush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,0.25">
+                  <GradientStop Color="#E4FFF5" Offset="0" />
+                  <GradientStop Color="#A0F5E2" Offset="0.55" />
+                  <GradientStop Color="#79AFFF" Offset="1" />
+                </LinearGradientBrush>
+              </Pen.Brush>
+            </Pen>
+          </GeometryDrawing.Pen>
+        </GeometryDrawing>
+      </DrawingGroup>
+    </DrawingImage.Drawing>
+  </DrawingImage>
+</ResourceDictionary>

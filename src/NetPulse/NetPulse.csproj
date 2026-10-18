@@ -7,11 +7,11 @@
     <Nullable>enable</Nullable>
     <AssemblyName>NetPulse</AssemblyName>
     <RootNamespace>NetPulse</RootNamespace>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
     <Product>NetPulse 网络测速与波动监测</Product>
     <Description>单文件网络测速、延迟、抖动和丢包监测工具</Description>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>Assets/NetPulse.ico</ApplicationIcon>
+    <ApplicationIcon>Assets/NetPulse.App.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
@@ -23,5 +23,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../NetPulse.Core/NetPulse.Core.csproj" />
+    <Resource Include="Assets/NetPulse.App.ico" />
   </ItemGroup>
 </Project>

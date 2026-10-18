@@ -20,7 +20,7 @@ public partial class App : Application
         window.Show();
         if (e.Args.Contains("--smoke-test"))
         {
-            _ = window.RunSmokeTestAsync(output, e.Args.Contains("--online"), e.Args.Contains("--speedtest-cn"), e.Args.Contains("--check-github"));
+            _ = window.RunSmokeTestAsync(output, e.Args.Contains("--online"), e.Args.Contains("--speedtest-cn"), e.Args.Contains("--check-github"), e.Args.Contains("--speedtest-net"));
         }
     }
 }
