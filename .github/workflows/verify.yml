@@ -19,3 +19,6 @@ jobs:
       - name: Verify and publish single EXE
         shell: pwsh
         run: ./build.ps1
+      - name: Verify real EXE replacement, restart and rollback
+        shell: pwsh
+        run: ./tools/verify-self-update.ps1

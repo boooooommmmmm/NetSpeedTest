@@ -104,6 +104,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var directory = dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetPulse");
         var syncSettings = new NodeCatalogStorage(directory).LoadSettings();
         _nodeStorage = new(directory, syncSettings.Provider);
+        _allowAutomaticInstallation = automaticStartup;
         _fetchNodeCatalog = nodeCatalogFetcher ?? ((proxy, token) => _nodeStorage.Provider == NodeCatalogProvider.SpeedTestNet
             ? new SpeedTestNetClient().GetNodesAsync(proxy, token) : new SpeedTestCnClient().GetNodesAsync(proxy, token));
         _nodeSnapshot = _nodeStorage.LoadCatalog();
@@ -119,18 +120,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_nodeSnapshot != null) ApplyCatalog(_nodeSnapshot);
         _ready = true;
         UpdateSourceUi();
-        Height = Math.Min(930, SystemParameters.WorkArea.Height - 30);
+        Height = Math.Clamp(SystemParameters.WorkArea.Height - 30, 700, 930);
         _clock.Tick += (_, _) => ElapsedText = _session.Elapsed.ToString(@"hh\:mm\:ss");
         _clock.Start();
         _syncTimer.Tick += async (_, _) => await CheckAutoSyncAsync();
-        if (automaticStartup) Loaded += async (_, _) => { _syncTimer.Start(); _updateTimer.Start(); await CheckAutoSyncAsync(); await CheckUpdatesAsync(force: false); };
+        if (automaticStartup) Loaded += async (_, _) => { _syncTimer.Start(); _updateTimer.Start(); await CheckAutoSyncAsync(); await CheckUpdatesAsync(force: false); await TryAutoInstallAsync(); };
         SourceInitialized += (_, _) =>
         {
             var dark = 1;
             _ = DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref dark, sizeof(int));
         };
-        Closing += (_, _) =>
+        Closing += (_, args) =>
         {
+            if (_updateDownloadCts != null && !_updateExitRequested)
+            {
+                args.Cancel = true;
+                if (!_updateHandoff) { _closeAfterUpdateCancel = true; _updateDownloadCts.Cancel(); }
+                return;
+            }
             _closing = true;
             _clock.Stop();
             _syncTimer.Stop();

@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Windows;
-using Microsoft.Win32;
 using NetPulse.Core;
 
 namespace NetPulse;
@@ -16,13 +15,14 @@ public partial class MainWindow
     private Func<CancellationToken, Task<GitHubReleaseInfo?>> _releaseChecker = null!;
     private string _updateMessage = "启动后检查 GitHub 最新版本";
     private double _updateDownloadProgress;
+    private bool _allowAutomaticInstallation, _updateHandoff, _updateExitRequested, _closeAfterUpdateCancel;
     public static Version CurrentVersion => GitHubReleaseInfo.Normalize(Assembly.GetExecutingAssembly().GetName().Version ?? new(1, 3, 0));
     public string VersionBadge => "●  单文件便携版 · v" + CurrentVersion.ToString(3);
     public string UpdateStatus => _updateMessage + (_updateState.LastCheckedAt is { } checkedAt ? $" · 上次检查 {checkedAt.LocalDateTime:MM-dd HH:mm}" : "");
     public bool CanCheckUpdates => !_loadingNodes && _speedCts == null && _updateCheckCts == null && _updateDownloadCts == null;
-    public bool CanDownloadUpdate => CanCheckUpdates && _updateState.Release?.IsNewerThan(CurrentVersion) == true;
-    public string DownloadUpdateText => _updateDownloadCts == null ? "下载新版" : $"取消下载 {_updateDownloadProgress:F0}%";
-    public bool UpdateDownloadButtonEnabled => CanDownloadUpdate || _updateDownloadCts != null;
+    public bool CanDownloadUpdate => CanCheckUpdates && _monitorCts == null && _updateState.Release?.IsNewerThan(CurrentVersion) == true;
+    public string DownloadUpdateText => _updateHandoff ? "正在重启…" : _updateDownloadCts == null ? "更新并重启" : $"取消下载 {_updateDownloadProgress:F0}%";
+    public bool UpdateDownloadButtonEnabled => !_updateHandoff && (CanDownloadUpdate || _updateDownloadCts != null);
 
     private void InitializeUpdates(Func<CancellationToken, Task<GitHubReleaseInfo?>>? releaseChecker)
     {
@@ -30,8 +30,9 @@ public partial class MainWindow
         _updateState = _updateStorage.Load();
         _releaseChecker = releaseChecker ?? new GitHubUpdateClient().CheckAsync;
         AutoUpdateCheckBox.IsChecked = _updateState.Enabled;
+        AutoInstallCheckBox.IsChecked = _updateState.AutoInstall;
         SetReleaseMessage();
-        _updateTimer.Tick += async (_, _) => await CheckUpdatesAsync(force: false);
+        _updateTimer.Tick += async (_, _) => { await CheckUpdatesAsync(force: false); await TryAutoInstallAsync(); };
     }
 
     private void RefreshUpdateControls() => Notify(nameof(UpdateStatus), nameof(CanCheckUpdates), nameof(CanDownloadUpdate), nameof(DownloadUpdateText), nameof(UpdateDownloadButtonEnabled));
@@ -51,11 +52,12 @@ public partial class MainWindow
     private void AutoUpdate_Changed(object sender, RoutedEventArgs e)
     {
         if (!_ready) return;
-        _updateState = _updateState with { Enabled = AutoUpdateCheckBox.IsChecked == true };
+        _updateState = _updateState with { Enabled = AutoUpdateCheckBox.IsChecked == true, AutoInstall = AutoInstallCheckBox.IsChecked == true };
         SaveUpdateState();
         RefreshUpdateControls();
     }
-    private async void CheckUpdates_Click(object sender, RoutedEventArgs e) => await CheckUpdatesAsync(force: true);
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    { await CheckUpdatesAsync(force: true); await TryAutoInstallAsync(); }
 
     private async Task CheckUpdatesAsync(bool force)
     {
@@ -83,7 +85,7 @@ public partial class MainWindow
         {
             _updateState = _updateState with { RetryAfter = DateTimeOffset.UtcNow.AddMinutes(15) };
             _updateMessage = "检查更新失败，稍后重试：" + ex.GetBaseException().Message;
-            if (_updateState.Release?.IsNewerThan(CurrentVersion) == true) _updateMessage += $"；已知新版 v{_updateState.Release.Version} 仍可下载";
+            if (_updateState.Release?.IsNewerThan(CurrentVersion) == true) _updateMessage += $"；已知新版 v{_updateState.Release.Version} 仍可更新";
             SaveUpdateState();
         }
         finally
@@ -103,12 +105,25 @@ public partial class MainWindow
 
     private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
     {
-        if (_updateDownloadCts != null) { _updateDownloadCts.Cancel(); return; }
+        if (_updateDownloadCts != null) { if (!_updateHandoff) _updateDownloadCts.Cancel(); return; }
+        await InstallUpdateAsync();
+    }
+
+    private async Task TryAutoInstallAsync(string? verifiedLocalPackage = null, string[]? restartArguments = null)
+    {
+        if (!_allowAutomaticInstallation || _closing || !CanDownloadUpdate ||
+            !SelfUpdate.CanAutoInstall(_updateState, _monitorCts != null || _speedCts != null || _loadingNodes || _updateDownloadCts != null,
+                HasSamples, DateTimeOffset.UtcNow)) return;
+        await InstallUpdateAsync(verifiedLocalPackage, restartArguments);
+    }
+
+    private async Task InstallUpdateAsync(string? verifiedLocalPackage = null, string[]? restartArguments = null)
+    {
         if (!CanDownloadUpdate || _updateState.Release is not { } release) return;
-        var dialog = new SaveFileDialog { Filter = "Windows 单文件程序 (*.exe)|*.exe", FileName = $"NetPulse-v{release.Version}.exe", AddExtension = true };
-        if (dialog.ShowDialog(this) != true) return;
-        if (Path.GetFullPath(dialog.FileName).Equals(Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
-        { _updateMessage = "请将新版保存到其他位置，关闭旧版后替换。"; RefreshUpdateControls(); return; }
+        var downloads = Path.Combine(_nodeStorage.DirectoryPath, "updates", "downloads");
+        var packagePath = Path.Combine(downloads, Guid.NewGuid().ToString("N") + ".exe");
+        SelfUpdateTransaction? transaction = null;
+        var handedOff = false;
         _updateDownloadCts = new();
         var token = _updateDownloadCts.Token;
         _updateDownloadProgress = 0;
@@ -116,21 +131,65 @@ public partial class MainWindow
         RefreshControls();
         try
         {
-            await new GitHubUpdateClient().DownloadAsync(release, dialog.FileName, new Progress<double>(value =>
+            SelfUpdate.EnsureWritableLocation(Environment.ProcessPath!);
+            Directory.CreateDirectory(downloads);
+            if (verifiedLocalPackage != null) File.Copy(verifiedLocalPackage, packagePath);
+            else await new GitHubUpdateClient().DownloadAsync(release, packagePath, new Progress<double>(value =>
             {
                 if (_closing || _updateDownloadCts == null) return;
                 _updateDownloadProgress = value; RefreshUpdateControls();
             }), token);
-            _updateMessage = $"v{release.Version} 已下载并校验，可关闭旧版后运行新文件";
-            MessageBox.Show(this, $"新版已下载，文件大小和 SHA-256 校验通过。\n\n{dialog.FileName}\n\n关闭当前旧版后运行新文件即可，原有设置会保留。", "下载完成", MessageBoxButton.OK, MessageBoxImage.Information);
+            token.ThrowIfCancellationRequested();
+            transaction = await SelfUpdate.PrepareAsync(Environment.ProcessPath!, packagePath, release, _nodeStorage.DirectoryPath, token, restartArguments);
+            if (_samples.Count > 0)
+                File.WriteAllText(transaction.SessionBackupPath, CsvExporter.Export(_samples), new System.Text.UTF8Encoding(true));
+            _updateHandoff = true;
+            _updateMessage = "新版校验通过，正在自动替换并重启…";
+            RefreshUpdateControls();
+            await SelfUpdate.StartHelperAsync(transaction, token);
+            token.ThrowIfCancellationRequested();
+            handedOff = true;
+            _updateExitRequested = true;
+            Application.Current.Shutdown();
         }
-        catch (OperationCanceledException) { _updateMessage = "新版下载已取消，可以重新下载。"; }
-        catch (Exception ex) { _updateMessage = "新版下载失败：" + ex.GetBaseException().Message; }
+        catch (OperationCanceledException)
+        {
+            _updateState = _updateState with { RetryAfter = DateTimeOffset.UtcNow.AddMinutes(15) };
+            SaveUpdateState();
+            _updateMessage = "新版下载已取消，可以重新更新。";
+        }
+        catch (Exception ex)
+        {
+            _updateState = _updateState with { RetryAfter = DateTimeOffset.UtcNow.AddMinutes(15) };
+            SaveUpdateState();
+            _updateMessage = "更新未完成，已保留当前程序：" + ex.Message;
+        }
         finally
         {
+            if (!handedOff && transaction != null)
+            {
+                File.WriteAllText(transaction.AbortPath, "cancel");
+                SelfUpdate.Cleanup(transaction);
+            }
+            try { File.Delete(packagePath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            _updateHandoff = false;
             _updateDownloadCts.Dispose(); _updateDownloadCts = null;
             if (!_closing) RefreshControls();
+            if (_closeAfterUpdateCancel && !handedOff) Close();
         }
+    }
+
+    internal void ReportUpdateStartup(SelfUpdateTransaction transaction, bool rolledBack)
+    {
+        if (rolledBack)
+        {
+            _updateState = _updateState with { RetryAfter = DateTimeOffset.UtcNow.AddMinutes(15) };
+            SaveUpdateState();
+            _updateMessage = SelfUpdate.ReadLastResult(_nodeStorage.DirectoryPath)?.Message ?? "新版启动失败，已自动恢复旧版。";
+        }
+        else _updateMessage = $"已自动更新至 v{CurrentVersion.ToString(3)}，当前运行位置保持不变";
+        if (File.Exists(transaction.SessionBackupPath)) _updateMessage += "；更新前记录已备份：" + transaction.SessionBackupPath;
+        RefreshUpdateControls();
     }
 
     private async Task VerifyUpdateWorkflowAsync(string outputDirectory, Dictionary<string, object> report)

@@ -362,6 +362,53 @@ await Run("Update check schedule and cached newer release survive reopening", ()
     finally { File.Delete(Path.Combine(folder, "updates.json")); if (Directory.Exists(folder)) Directory.Delete(folder); }
     return Task.CompletedTask;
 });
+await Run("Automatic installation waits for idle, respects preferences, records and retry cooldown", () =>
+{
+    var now = DateTimeOffset.UtcNow;
+    var state = new UpdateCheckState();
+    Check(SelfUpdate.CanAutoInstall(state, false, false, now), "Default automatic install is disabled");
+    Check(!SelfUpdate.CanAutoInstall(state, true, false, now) && !SelfUpdate.CanAutoInstall(state, false, true, now), "Active work or records were interrupted");
+    Check(!SelfUpdate.CanAutoInstall(state with { AutoInstall = false }, false, false, now) &&
+        !SelfUpdate.CanAutoInstall(state with { Enabled = false }, false, false, now), "Disabled preference ignored");
+    Check(!SelfUpdate.CanAutoInstall(state with { RetryAfter = now.AddMinutes(15) }, false, false, now), "Failure cooldown ignored");
+    Check(JsonSerializer.Deserialize<UpdateCheckState>("{\"Enabled\":false}") is { Enabled: false, AutoInstall: true }, "Legacy update preferences did not migrate");
+    return Task.CompletedTask;
+});
+await Run("Self-update request rejects wrong handoff tokens, stale requests and noncanonical targets", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "NetPulse-handoff-" + Guid.NewGuid().ToString("N"));
+    var id = Guid.NewGuid().ToString("N");
+    var transactionDirectory = Path.Combine(directory, "updates", id);
+    Directory.CreateDirectory(transactionDirectory);
+    var path = Path.Combine(transactionDirectory, "request.json");
+    var request = new SelfUpdateRequest(id, new string('A', 64), Path.Combine(directory, "NetPulse.exe"), new string('B', 64), 100,
+        Environment.ProcessId, DateTime.UtcNow.Ticks, ReleaseFixture(), directory, [], DateTimeOffset.UtcNow);
+    try
+    {
+        File.WriteAllText(path, JsonSerializer.Serialize(request));
+        Check(SelfUpdate.ReadTransaction(path, request.Nonce).Request.Id == id, "Valid request rejected");
+        Throws<InvalidDataException>(() => SelfUpdate.ReadTransaction(path, new string('C', 64)));
+        File.WriteAllText(path, JsonSerializer.Serialize(request with { CreatedAt = DateTimeOffset.UtcNow.AddHours(-1) }));
+        Throws<InvalidDataException>(() => SelfUpdate.ReadTransaction(path, request.Nonce));
+        File.WriteAllText(path, JsonSerializer.Serialize(request with { TargetPath = Path.Combine(directory, "sub", "..", "NetPulse.exe") }));
+        Throws<InvalidDataException>(() => SelfUpdate.ReadTransaction(path, request.Nonce));
+    }
+    finally { File.Delete(path); Directory.Delete(transactionDirectory); Directory.Delete(Path.GetDirectoryName(transactionDirectory)!); Directory.Delete(directory); }
+    return Task.CompletedTask;
+});
+await Run("Self-update rejects a hash-valid payload that is not a Windows executable", async () =>
+{
+    var path = Path.Combine(Path.GetTempPath(), "NetPulse-invalid-" + Guid.NewGuid().ToString("N") + ".exe");
+    var bytes = Encoding.UTF8.GetBytes("not an executable");
+    File.WriteAllBytes(path, bytes);
+    try
+    {
+        var release = ReleaseFixture() with { Size = bytes.Length, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)) };
+        await ThrowsAsync<BadImageFormatException>(() => SelfUpdate.ValidatePackageAsync(path, release, default));
+        await ThrowsAsync<InvalidDataException>(() => SelfUpdate.ValidatePackageAsync(path, release with { Sha256 = new string('0', 64) }, default));
+    }
+    finally { File.Delete(path); }
+});
 Console.WriteLine($"\n{passed} passed, {failed} failed.");
 if (failed == 0 && args.Contains("--compare-online"))
 {

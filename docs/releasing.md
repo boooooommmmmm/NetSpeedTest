@@ -36,4 +36,6 @@ dotnet run --project tests/NetPulse.Tests/NetPulse.Tests.csproj -c Release -- --
 
 该检查验证公开 GitHub Release、旧版本客户端能识别升级、当前版本显示已是最新，并用客户端的实际下载逻辑重新下载 EXE，核对大小及 SHA-256。官方 raw 清单也应与公开 Release 附件一致；GitHub 缓存延迟时等待并复查实际地址，避免重发公开附件。
 
-客户端只连接固定官方仓库，发布检查与下载使用 HTTPS。SHA-256 验证下载完整性，信任来源为 GitHub 官方 HTTPS 元数据；它不是独立发布者签名，也不是 Windows Authenticode 代码签名。当前实现提供版本检查、提示和手动保存新 EXE；用户关闭旧版后运行新文件。
+客户端只连接固定官方仓库，发布检查与下载使用 HTTPS。SHA-256 验证下载完整性，信任来源为 GitHub 官方 HTTPS 元数据；它不是独立发布者签名，也不是 Windows Authenticode 代码签名。
+
+v1.5 起支持同一路径替换与自动重启。后续版本须保持 `--apply-update`、`NETPULSE_UPDATE_REQUEST` / `NETPULSE_UPDATE_NONCE` / `NETPULSE_UPDATE_ROLLBACK` 和启动确认协议兼容，并在发布前运行 `pwsh -NoProfile -File tools/verify-self-update.ps1`。重启上下文只传递给新进程并立即清除，不写入常规启动命令；也兼容显式完成/回滚参数。该工具在隔离目录构建旧版本夹具和新版，验证真实文件替换、空闲自动安装、启动失败回滚、损坏包拒绝安装、只读目标保护、设置与记录备份；GitHub Verify 也运行它。v1.4 及更早版本仍需手动升级到 v1.5 一次。

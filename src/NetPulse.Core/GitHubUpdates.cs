@@ -13,7 +13,7 @@ public sealed record GitHubReleaseInfo(string Version, string DownloadUrl, strin
 }
 
 public sealed record UpdateCheckState(bool Enabled = true, DateTimeOffset? LastCheckedAt = null,
-    DateTimeOffset? RetryAfter = null, GitHubReleaseInfo? Release = null)
+    DateTimeOffset? RetryAfter = null, GitHubReleaseInfo? Release = null, bool AutoInstall = true)
 {
     public static readonly TimeSpan Interval = TimeSpan.FromHours(6);
     public bool IsDue(DateTimeOffset now, bool busy = false) => Enabled && !busy &&
@@ -159,7 +159,7 @@ public sealed class GitHubUpdateClient
     private HttpClient CreateClient()
     {
         var client = _createClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("NetPulse-Update/1.3");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("NetPulse-Update/1.5");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         client.DefaultRequestHeaders.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
         client.DefaultRequestHeaders.CacheControl = new() { NoCache = true };
