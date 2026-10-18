@@ -26,7 +26,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Build or tests failed.' }
     if ((Assert-CleanReleaseSource) -ne $sourceCommit) { throw 'Source revision changed during the build.' }
     $exePath = (Resolve-Path -LiteralPath 'dist/NetPulse.exe').Path
-    if ([version](Get-Item -LiteralPath $exePath).VersionInfo.FileVersion -ne [version]$Version) { throw 'Published EXE version mismatch.' }
+    $builtVersion = [version](Get-Item -LiteralPath $exePath).VersionInfo.FileVersion
+    if ($builtVersion.ToString(3) -ne $Version -or $builtVersion.Revision -gt 0) { throw 'Published EXE version mismatch.' }
     $packageRoot = Join-Path $projectRoot "artifacts/release/v$Version"
     New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
     $hash = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash.ToLowerInvariant()
