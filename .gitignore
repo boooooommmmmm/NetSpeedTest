@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+artifacts/
+dist/
+.vs/
+*.user
+*.download
+*.pfx
+*.pem
+*.key
+.env
+github-token*.txt
