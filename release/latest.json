@@ -1,10 +1,10 @@
 {
-  "Version": "1.3.0",
-  "DownloadUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/download/v1.3.0/NetPulse.exe",
-  "ReleaseUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/tag/v1.3.0",
-  "Size": 64977955,
-  "Sha256": "e0553c2fa0342a0cabdd21058dc8401ff144cf75fb4b7419ea245efab9607661",
-  "Notes": "# NetPulse v1.3.0\n\nWindows x64 单文件网络测速与波动监测工具，分发文件为 `NetPulse.exe`，已包含运行库。\n\n- 新增 GitHub 最新版本检查：默认程序运行期间每 6 小时检查一次，也可手动检查或关闭自动检查。\n- 发现新版时显示版本号、发布说明和下载按钮；下载完成后核对官方发布的文件大小及 SHA-256。\n- 检查失败时保留已发现的新版，并在 15 分钟后重试；测速或下载期间顺延检查，避免干扰网络测试。\n- 版本信息优先读取本仓库的 GitHub Releases API，连接失败时读取官方仓库的 `release/latest.json`。\n- 保留测速网国内节点、Cloudflare 对照、自定义节点、下载/上传测速、延迟/抖动/失败率、CSV 导出及定期同步节点/IP。\n\n使用：下载 `NetPulse.exe` 后直接运行。客户端发现新版后可将新文件保存到其他位置，关闭旧版后运行或替换，原有用户设置与节点缓存继续保留。\n\n测速结果受所选节点、线路及网络负载影响；ICMP/TCP 探测失败率不能直接等同于链路实际丢包率。\n",
-  "PublishedAt": "2026-10-18T06:22:49.1870934+00:00",
-  "SourceCommit": "41dde304bba1184d08803db3c8b83e2744a641aa"
+  "Version": "1.4.0",
+  "DownloadUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/download/v1.4.0/NetPulse.exe",
+  "ReleaseUrl": "https://github.com/boooooommmmmm/NetSpeedTest/releases/tag/v1.4.0",
+  "Size": 65249355,
+  "Sha256": "c23df861b28d819bc57a3ec77232789c78966f29919c1f34ab4e2aaaa22e4b7b",
+  "Notes": "# NetPulse v1.4.0\n\n新增 Speedtest.net 节点和 IP 定期同步，并启用新的“网络脉搏”应用图标。Windows x64 单文件分发，下载 `NetPulse.exe` 即可运行，无需安装运行库。\n\n- 默认使用“Speedtest.net · Ookla 节点”，动态获取公开节点，检测可达性并解析 IPv4 / IPv6。默认运行期间每 15 分钟刷新，可选 5 / 15 / 30 / 60 分钟，也可手动同步或关闭自动同步。\n- 保存最近选择的节点源。Speedtest.net 与测速网分别缓存列表和选中节点，切换来源及重启后恢复；兼容旧版同步设置与测速网缓存。\n- 同步失败或取消时保留现有缓存，开启自动同步时 1 分钟后重试；测速与下载更新期间顺延刷新，避免影响带宽测试。定时刷新只更新节点/IP 并做小流量探测，不会自动进行下载、上传测速。\n- Speedtest.net 节点使用 HTTPS 与正常证书校验，按公开主机别名连接；检查标准延迟响应和下载 JPEG 标识，上传仅统计服务器确认收到的数据。\n- 新应用图标覆盖 EXE、窗口、任务栏和界面左上角，包含 16～256 像素共 10 档透明图像，针对小尺寸优化笔画。\n- 保留测速网、Cloudflare、自定义 HTTP 节点、下载/上传测速、延迟/抖动/失败率、CSV 导出和 GitHub 新版本检查。\n\n程序自行实现 HTTP 吞吐测量，未集成 Ookla 官方测速引擎，结果可能与 Speedtest.net 网页或官方 App 不同。部分公开节点不支持此 HTTP 测速方式，可以切换节点或来源。测速会产生实际流量。\n\n旧版可点击“检查更新”，保存新版 EXE 后关闭旧版，再运行或替换新文件，用户设置与节点缓存继续保留。\n",
+  "PublishedAt": "2026-10-18T07:28:30.1531735+00:00",
+  "SourceCommit": "a7f18da84b6be0f9c388e6411d8689ce7b5ae7b8"
 }
