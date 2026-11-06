@@ -28,9 +28,13 @@ public sealed class UpdateStateStorage(string directory)
         try
         {
             if (!File.Exists(_path) || new FileInfo(_path).Length > 1024 * 1024) return new();
-            var state = JsonSerializer.Deserialize<UpdateCheckState>(File.ReadAllText(_path));
-            if (state?.Release != null) GitHubUpdateClient.Validate(state.Release);
-            return state ?? new();
+            var state = JsonSerializer.Deserialize<UpdateCheckState>(File.ReadAllText(_path)) ?? new();
+            if (state.Release != null)
+            {
+                try { GitHubUpdateClient.Validate(state.Release); }
+                catch (ArgumentException) { return state with { Release = null }; }
+            }
+            return state;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { return new(); }
     }

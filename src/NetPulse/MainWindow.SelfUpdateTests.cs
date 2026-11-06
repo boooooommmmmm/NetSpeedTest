@@ -26,6 +26,42 @@ public partial class MainWindow
             package.Close();
             _updateState = _updateState with { Release = release };
             SaveUpdateState();
+            if (mode == "competing-update")
+            {
+                using var competingLock = new FileStream(Environment.ProcessPath + ".netpulse-update.lock",
+                    FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+                await InstallUpdateAsync(packagePath);
+                if (_updateExitRequested || _updateDownloadCts != null || _updateHandoff || !UpdateStatus.Contains("更新未完成"))
+                    throw new InvalidOperationException("A conflicting update did not leave the current application usable.");
+                WriteSelfUpdateProof(outputDirectory, "RejectedBeforeExit", null);
+                Close();
+                return;
+            }
+            if (mode == "helper-start-failure")
+            {
+                var transaction = await SelfUpdate.PrepareAsync(Environment.ProcessPath!, packagePath, release, _nodeStorage.DirectoryPath, default);
+                try
+                {
+                    // Fail validation inside the real helper and make its abort marker unwritable.
+                    await File.AppendAllTextAsync(transaction.CandidatePath, "corruption");
+                    Directory.CreateDirectory(transaction.AbortPath);
+                    try
+                    {
+                        await SelfUpdate.StartHelperAsync(transaction, default);
+                        throw new InvalidOperationException("Corrupt helper candidate was accepted.");
+                    }
+                    catch (IOException ex) when (ex.Message.Contains("校验")) { }
+                }
+                finally
+                {
+                    Directory.Delete(transaction.AbortPath);
+                    SelfUpdate.Cleanup(transaction);
+                }
+                if (File.Exists(transaction.HelperPath)) throw new InvalidOperationException("Failed helper was still running during cleanup.");
+                WriteSelfUpdateProof(outputDirectory, "RejectedBeforeExit", null);
+                Close();
+                return;
+            }
             if (mode == "readonly-target")
             {
                 var target = Environment.ProcessPath!;
@@ -80,12 +116,15 @@ public partial class MainWindow
         var settings = _nodeStorage.LoadSettings();
         var backup = transaction?.SessionBackupPath;
         var auto = transaction?.Request.RestartArguments.Contains("auto-idle") == true;
+        if (status == "RolledBack" && !(_updateState.RetryAfter > DateTimeOffset.UtcNow))
+            throw new InvalidOperationException("Rollback lost its in-memory retry cooldown.");
         File.WriteAllText(Path.Combine(outputDirectory, "proof.json"), JsonSerializer.Serialize(new
         {
             Status = status, Version = CurrentVersion.ToString(3), Path = Environment.ProcessPath,
             SettingsPreserved = !settings.Enabled && settings.IntervalMinutes == 30 && settings.UseProxy,
             PreferencesPreserved = _updateState.Enabled == auto && _updateState.AutoInstall == auto,
             RecordsBackedUp = backup != null && File.Exists(backup) && File.ReadAllText(backup).Contains("update-session-marker"),
+            RollbackCooldown = _updateState.RetryAfter > DateTimeOffset.UtcNow,
             SessionBackup = backup, UpdateStatus
         }, new JsonSerializerOptions { WriteIndented = true }));
     }

@@ -47,19 +47,25 @@ public partial class App : Application
                 }
                 transaction = SelfUpdate.ReadTransaction(requestPath!, requestNonce ?? "");
                 dataDirectory = Path.GetDirectoryName(Path.GetDirectoryName(transaction.DirectoryPath));
-                if (rolledBack)
-                {
-                    var storage = new UpdateStateStorage(dataDirectory!);
-                    storage.Save(storage.Load() with { RetryAfter = DateTimeOffset.UtcNow.AddMinutes(15) });
-                }
             }
             catch (Exception ex) { MessageBox.Show(ex.Message, "更新恢复失败"); Shutdown(1); return; }
         }
         if (testIndex >= 0 && testIndex + 3 < e.Args.Length) dataDirectory = Path.Combine(e.Args[testIndex + 1], "appdata");
-        if (restartedIndex >= 0 && updateCompleted && e.Args.ElementAtOrDefault(restartedIndex + 2) == "startup-failure")
-        { Shutdown(42); return; }
+        if (restartedIndex >= 0 && updateCompleted)
+        {
+            var mode = e.Args.ElementAtOrDefault(restartedIndex + 2);
+            if (mode == "rollback-state-readonly")
+            {
+                var statePath = Path.Combine(dataDirectory!, "updates.json");
+                File.SetAttributes(statePath, File.GetAttributes(statePath) | FileAttributes.ReadOnly);
+            }
+            if (mode is "startup-failure" or "rollback-state-readonly") { Shutdown(42); return; }
+        }
         var window = new MainWindow(dataDirectory, automaticStartup: smokeIndex < 0 && testIndex < 0 && restartedIndex < 0);
         MainWindow = window;
+        // Set the in-memory retry cooldown before Loaded can schedule another install.
+        // A read-only preferences file must still allow the restored application to open.
+        if (transaction != null && rolledBack) window.ReportUpdateStartup(transaction, rolledBack: true);
         var startupReported = false;
         window.ContentRendered += async (_, _) =>
         {
@@ -69,8 +75,11 @@ public partial class App : Application
             {
                 if (transaction != null)
                 {
-                    if (updateCompleted) await SelfUpdate.AcknowledgeStartupAsync(transaction);
-                    window.ReportUpdateStartup(transaction, rolledBack);
+                    if (updateCompleted)
+                    {
+                        await SelfUpdate.AcknowledgeStartupAsync(transaction);
+                        window.ReportUpdateStartup(transaction, rolledBack: false);
+                    }
                     _ = Task.Run(() => SelfUpdate.CleanupAfterHelperAsync(transaction));
                 }
                 if (restartedIndex >= 0 && restartedIndex + 2 < e.Args.Length)

@@ -15,7 +15,7 @@ public sealed record ProbeSample(DateTimeOffset Time, string Target, ProbeMode M
 
 public sealed class LatencyStatistics
 {
-    private readonly List<double> _latencies = [];
+    private readonly List<double> _sortedLatencies = [];
     private double _sum, _differenceSum;
     private double? _previous;
     private int _pairs;
@@ -27,15 +27,8 @@ public sealed class LatencyStatistics
     public double? Minimum { get; private set; }
     public double? Maximum { get; private set; }
     public double? Jitter => _pairs == 0 ? null : _differenceSum / _pairs;
-    public double? P95
-    {
-        get
-        {
-            if (_latencies.Count == 0) return null;
-            var sorted = _latencies.Order().ToArray();
-            return sorted[(int)Math.Ceiling(sorted.Length * .95) - 1];
-        }
-    }
+    public double? P95 => _sortedLatencies.Count == 0 ? null
+        : _sortedLatencies[(int)Math.Ceiling(_sortedLatencies.Count * .95) - 1];
 
     public void Add(ProbeSample sample)
     {
@@ -46,7 +39,9 @@ public sealed class LatencyStatistics
             _previous = null;
             return;
         }
-        _latencies.Add(value);
+        // Keep exact nearest-rank percentiles without sorting and allocating on every UI refresh.
+        var index = _sortedLatencies.BinarySearch(value);
+        _sortedLatencies.Insert(index < 0 ? ~index : index, value);
         _sum += value;
         Minimum = Math.Min(Minimum ?? value, value);
         Maximum = Math.Max(Maximum ?? value, value);

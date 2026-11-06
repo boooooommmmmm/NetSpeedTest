@@ -117,6 +117,7 @@ public static class SelfUpdate
 
     public static async Task StartHelperAsync(SelfUpdateTransaction transaction, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(transaction.HelperPath) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden };
         start.ArgumentList.Add("--apply-update"); start.ArgumentList.Add(transaction.RequestPath); start.ArgumentList.Add(transaction.Request.Nonce);
         using var helper = Process.Start(start) ?? throw new IOException("无法启动更新替换进程。");
@@ -127,20 +128,31 @@ public static class SelfUpdate
             while (true)
             {
                 timeout.Token.ThrowIfCancellationRequested();
+                if (helper.HasExited) throw new IOException(ReadJson<SelfUpdateResult>(transaction.ResultPath)?.Message ?? "更新替换进程提前退出。");
                 if (File.Exists(transaction.ReadyPath))
                 {
                     var ready = ReadJson<UpdateStartupAck>(transaction.ReadyPath);
                     if (ready?.Nonce == transaction.Request.Nonce && ready.ProcessId == helper.Id) return;
                 }
-                if (helper.HasExited) throw new IOException(ReadJson<SelfUpdateResult>(transaction.ResultPath)?.Message ?? "更新替换进程提前退出。");
                 await Task.Delay(100, timeout.Token).ConfigureAwait(false);
             }
         }
         catch
         {
-            File.WriteAllText(transaction.AbortPath, "cancel");
-            try { await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { }
+            try { File.WriteAllText(transaction.AbortPath, "cancel"); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            try
+            {
+                await helper.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // The parent is still running, so this helper has not been allowed to replace the EXE.
+                // Stop our own child before removing its abort marker and staged files.
+                try { helper.Kill(); }
+                catch (InvalidOperationException) when (helper.HasExited) { }
+                await helper.WaitForExitAsync().ConfigureAwait(false);
+            }
             throw;
         }
     }
@@ -308,9 +320,13 @@ public static class SelfUpdate
     }
     private static void WriteJson<T>(string path, T value)
     {
-        var temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(value, JsonOptions));
-        File.Move(temporary, path, true);
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(value, JsonOptions));
+            File.Move(temporary, path, true);
+        }
+        finally { TryDelete(temporary); }
     }
     private static void SaveResult(SelfUpdateTransaction transaction, string status, string message)
     {

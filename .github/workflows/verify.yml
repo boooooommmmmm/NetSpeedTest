@@ -22,3 +22,19 @@ jobs:
       - name: Verify real EXE replacement, restart and rollback
         shell: pwsh
         run: ./tools/verify-self-update.ps1
+      - name: Verify offline WPF workflows
+        shell: pwsh
+        run: |
+          $outputDirectory = Join-Path $PWD 'artifacts/smoke'
+          $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $PWD 'dist/NetPulse.exe'))
+          $start.UseShellExecute = $false
+          $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+          $start.ArgumentList.Add('--smoke-test')
+          $start.ArgumentList.Add($outputDirectory)
+          $process = [Diagnostics.Process]::Start($start)
+          try {
+            if (-not $process.WaitForExit(60000)) { throw 'WPF smoke test timed out.' }
+            if ($process.ExitCode -ne 0) { throw "WPF smoke test failed with exit code $($process.ExitCode)." }
+            $report = Get-Content -LiteralPath (Join-Path $outputDirectory 'report.json') -Raw | ConvertFrom-Json
+            if (-not $report.success) { throw ($report | ConvertTo-Json -Depth 5) }
+          } finally { $process.Dispose() }

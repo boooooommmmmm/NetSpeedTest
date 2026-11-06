@@ -147,7 +147,7 @@ public partial class MainWindow
             _updateMessage = "新版校验通过，正在自动替换并重启…";
             RefreshUpdateControls();
             await SelfUpdate.StartHelperAsync(transaction, token);
-            token.ThrowIfCancellationRequested();
+            // A ready helper owns the handoff. Cancellation is handled before this point.
             handedOff = true;
             _updateExitRequested = true;
             Application.Current.Shutdown();
@@ -168,7 +168,6 @@ public partial class MainWindow
         {
             if (!handedOff && transaction != null)
             {
-                File.WriteAllText(transaction.AbortPath, "cancel");
                 SelfUpdate.Cleanup(transaction);
             }
             try { File.Delete(packagePath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -184,53 +183,12 @@ public partial class MainWindow
         if (rolledBack)
         {
             _updateState = _updateState with { RetryAfter = DateTimeOffset.UtcNow.AddMinutes(15) };
-            SaveUpdateState();
             _updateMessage = SelfUpdate.ReadLastResult(_nodeStorage.DirectoryPath)?.Message ?? "新版启动失败，已自动恢复旧版。";
+            SaveUpdateState();
         }
         else _updateMessage = $"已自动更新至 v{CurrentVersion.ToString(3)}，当前运行位置保持不变";
         if (File.Exists(transaction.SessionBackupPath)) _updateMessage += "；更新前记录已备份：" + transaction.SessionBackupPath;
         RefreshUpdateControls();
     }
 
-    private async Task VerifyUpdateWorkflowAsync(string outputDirectory, Dictionary<string, object> report)
-    {
-        var fixture = new GitHubReleaseInfo("99.0.0", $"https://github.com/{GitHubUpdateClient.Repository}/releases/download/v99.0.0/NetPulse.exe",
-            $"https://github.com/{GitHubUpdateClient.Repository}/releases/tag/v99.0.0", 100, new string('A', 64), "测试发布说明", DateTimeOffset.UtcNow);
-        var fail = false; var calls = 0;
-        Task<GitHubReleaseInfo?> Check(CancellationToken token)
-        {
-            calls++;
-            return fail ? Task.FromException<GitHubReleaseInfo?>(new IOException("模拟 GitHub 离线")) : Task.FromResult<GitHubReleaseInfo?>(fixture);
-        }
-        var path = Path.Combine(outputDirectory, "update-simulation");
-        var window = new MainWindow(path, automaticStartup: false, releaseChecker: Check);
-        try
-        {
-            await window.CheckUpdatesAsync(force: true);
-            if (!window.CanDownloadUpdate || !window.UpdateStatus.Contains("99.0.0") || calls != 1)
-                throw new InvalidOperationException("A newer GitHub release was not shown.");
-            await window.CheckUpdatesAsync(force: false);
-            if (calls != 1) throw new InvalidOperationException("Periodic update check ignored the six-hour interval.");
-            window._speedCts = new();
-            await window.CheckUpdatesAsync(force: true);
-            window._speedCts.Dispose(); window._speedCts = null;
-            if (calls != 1) throw new InvalidOperationException("Update check ran during a speed test.");
-            fail = true;
-            await window.CheckUpdatesAsync(force: true);
-            if (!window.CanDownloadUpdate || !window.UpdateStatus.Contains("失败") || calls != 2)
-                throw new InvalidOperationException("A failed check discarded a previously discovered update.");
-            window.AutoUpdateCheckBox.IsChecked = false;
-            var reopened = new MainWindow(path, automaticStartup: false, releaseChecker: Check);
-            try
-            {
-                if (reopened.AutoUpdateCheckBox.IsChecked != false || !reopened.CanDownloadUpdate)
-                    throw new InvalidOperationException("Update preference or cached release did not survive reopening.");
-                await reopened.CheckUpdatesAsync(force: false);
-                if (calls != 2) throw new InvalidOperationException("Disabled automatic update check still ran.");
-            }
-            finally { reopened.Close(); }
-            report["gitHubUpdateWorkflow"] = new { NewVersionVisible = true, CheckInterval = true, BusyDeferral = true, FailureRetention = true, PreferenceRestore = true };
-        }
-        finally { window.Close(); }
-    }
 }

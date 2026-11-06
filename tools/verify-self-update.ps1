@@ -1,4 +1,4 @@
-param([switch]$SkipBuild)
+param([switch]$SkipBuild, [string]$PreviousExe = '')
 
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'Run with PowerShell 7.' }
@@ -9,20 +9,31 @@ $project = Join-Path $projectRoot 'src/NetPulse/NetPulse.csproj'
 [xml]$definition = Get-Content -LiteralPath $project -Raw
 $newVersion = [string]$definition.Project.PropertyGroup.Version
 $oldVersion = '1.4.99'
+$oldExe = Join-Path $oldDirectory 'NetPulse.exe'
+$modes = @('success', 'auto-idle', 'startup-failure', 'rollback-state-readonly', 'corrupt-package', 'readonly-target', 'competing-update', 'helper-start-failure')
+if ($PreviousExe) {
+    $oldExe = (Resolve-Path -LiteralPath $PreviousExe).Path
+    $oldVersion = ([version](Get-Item -LiteralPath $oldExe).VersionInfo.FileVersion).ToString(3)
+    # Published v1.5 clients support these three protocol compatibility scenarios.
+    $modes = @('success', 'auto-idle', 'startup-failure')
+}
 if (-not $SkipBuild) {
-    & dotnet publish $project -c Release "-p:Version=$oldVersion" -o $oldDirectory
-    if ($LASTEXITCODE -ne 0) { throw 'Old-version fixture build failed.' }
+    if (-not $PreviousExe) {
+        & dotnet publish $project -c Release "-p:Version=$oldVersion" -o $oldDirectory
+        if ($LASTEXITCODE -ne 0) { throw 'Old-version fixture build failed.' }
+    }
     & dotnet publish $project -c Release -o (Join-Path $projectRoot 'dist')
     if ($LASTEXITCODE -ne 0) { throw 'Current-version build failed.' }
 }
 $package = Join-Path $projectRoot 'dist/NetPulse.exe'
-$oldExe = Join-Path $oldDirectory 'NetPulse.exe'
+if (([version]$oldVersion) -ge ([version]$newVersion)) { throw 'The previous executable must be older than the new package.' }
+if (([version](Get-Item -LiteralPath $package).VersionInfo.FileVersion).ToString(3) -ne $newVersion) { throw 'The package version does not match the project.' }
 $oldHash = (Get-FileHash -LiteralPath $oldExe).Hash
 $newHash = (Get-FileHash -LiteralPath $package).Hash
 if ($oldHash -eq $newHash) { throw 'Fixtures must be different real executable versions.' }
 $runRoot = Join-Path $artifactRoot ('run-' + [Guid]::NewGuid().ToString('N'))
 $results = @()
-foreach ($mode in @('success', 'auto-idle', 'startup-failure', 'corrupt-package', 'readonly-target')) {
+foreach ($mode in $modes) {
     # Literal shell metacharacters, Unicode, spaces and a renamed executable exercise ArgumentList.
     $caseDirectory = Join-Path $runRoot ($mode + ' 中文 空格 & $()')
     $null = New-Item -ItemType Directory -Path $caseDirectory -Force
@@ -44,12 +55,21 @@ foreach ($mode in @('success', 'auto-idle', 'startup-failure', 'corrupt-package'
             Start-Sleep -Milliseconds 200
         }
         $proof = Get-Content -LiteralPath $proofPath -Raw | ConvertFrom-Json
-        $expectedStatus = switch ($mode) { 'success' { 'Succeeded' } 'auto-idle' { 'Succeeded' } 'startup-failure' { 'RolledBack' } default { 'RejectedBeforeExit' } }
+        $expectedStatus = switch ($mode) { 'success' { 'Succeeded' } 'auto-idle' { 'Succeeded' } 'startup-failure' { 'RolledBack' } 'rollback-state-readonly' { 'RolledBack' } default { 'RejectedBeforeExit' } }
         $expectedVersion = if ($mode -in @('success', 'auto-idle')) { $newVersion } else { $oldVersion }
         if ($proof.Status -ne $expectedStatus -or $proof.Version -ne $expectedVersion -or $proof.Path -ne $target -or -not $proof.SettingsPreserved -or -not $proof.PreferencesPreserved) {
             throw ('Restart path/version/preferences mismatch: ' + ($proof | ConvertTo-Json -Compress))
         }
-        if ($mode -notin @('corrupt-package', 'readonly-target')) {
+        if ($expectedStatus -eq 'RolledBack') {
+            $cooldown = $proof.RollbackCooldown
+            if ($PreviousExe) {
+                $savedState = Get-Content -LiteralPath (Join-Path $caseDirectory 'appdata/updates.json') -Raw | ConvertFrom-Json
+                $cooldown = $savedState.RetryAfter -and [DateTimeOffset]$savedState.RetryAfter -gt [DateTimeOffset]::UtcNow
+            }
+            if (-not $cooldown) { throw 'Rollback retry cooldown was not applied.' }
+        }
+        if ($mode -eq 'rollback-state-readonly' -and $proof.UpdateStatus -notmatch '未能保存') { throw 'Read-only preferences were not exercised.' }
+        if ($expectedStatus -in @('Succeeded', 'RolledBack')) {
             if ($mode -ne 'auto-idle' -and -not $proof.RecordsBackedUp) { throw 'Session CSV backup was not retained.' }
             $resultPath = Join-Path $caseDirectory 'appdata/updates/last-result.json'
             $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
@@ -68,5 +88,5 @@ foreach ($mode in @('success', 'auto-idle', 'startup-failure', 'corrupt-package'
     } finally { $parent.Dispose() }
 }
 $reportPath = Join-Path $runRoot 'verification.json'
-[ordered]@{ OldVersion=$oldVersion; NewVersion=$newVersion; Cases=$results; Success=$true } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $reportPath -Encoding utf8
+[ordered]@{ OldVersion=$oldVersion; NewVersion=$newVersion; PreviousExecutable=$oldExe; Cases=$results; Success=$true } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $reportPath -Encoding utf8
 Write-Output ('Verification: ' + $reportPath)

@@ -39,3 +39,5 @@ dotnet run --project tests/NetPulse.Tests/NetPulse.Tests.csproj -c Release -- --
 客户端只连接固定官方仓库，发布检查与下载使用 HTTPS。SHA-256 验证下载完整性，信任来源为 GitHub 官方 HTTPS 元数据；它不是独立发布者签名，也不是 Windows Authenticode 代码签名。
 
 v1.5 起支持同一路径替换与自动重启。后续版本须保持 `--apply-update`、`NETPULSE_UPDATE_REQUEST` / `NETPULSE_UPDATE_NONCE` / `NETPULSE_UPDATE_ROLLBACK` 和启动确认协议兼容，并在发布前运行 `pwsh -NoProfile -File tools/verify-self-update.ps1`。重启上下文只传递给新进程并立即清除，不写入常规启动命令；也兼容显式完成/回滚参数。该工具在隔离目录构建旧版本夹具和新版，验证真实文件替换、空闲自动安装、启动失败回滚、损坏包拒绝安装、只读目标保护、设置与记录备份；GitHub Verify 也运行它。v1.4 及更早版本仍需手动升级到 v1.5 一次。
+
+为核对已分发客户端的兼容性，在验证旧 EXE 的公开 SHA-256 后，增加一次 `pwsh -NoProfile -File tools/verify-self-update.ps1 -SkipBuild -PreviousExe <旧版EXE路径>`。该模式直接运行提供的原版程序，检查一键更新、空闲自动更新和启动失败回滚三个场景。默认夹具模式另外覆盖状态文件只读回滚、更新锁冲突和辅助进程失败清理。

@@ -19,6 +19,22 @@ await Run("Latency statistics: loss, percentile, and jitter across a lost probe"
     Check(stats.Average == 40 && stats.Jitter == 20 && stats.P95 == 80 && stats.Minimum == 10 && stats.Maximum == 80, "Distribution incorrect");
     return Task.CompletedTask;
 });
+await Run("Exact P95 stays correct across duplicate, descending and failed samples", () =>
+{
+    var stats = new LatencyStatistics();
+    var values = new List<double>();
+    var random = new Random(1729);
+    for (var i = 0; i < 2000; i++)
+    {
+        double? value = i % 17 == 0 ? null : i < 1000 ? 1000 - i : random.Next(0, 50);
+        stats.Add(new(DateTimeOffset.UtcNow, "test", ProbeMode.Icmp, TrafficPhase.Idle, value, ""));
+        if (value.HasValue) values.Add(value.Value);
+        var sorted = values.Order().ToArray();
+        double? expected = sorted.Length == 0 ? null : sorted[(int)Math.Ceiling(sorted.Length * .95) - 1];
+        Check(stats.P95 == expected && stats.P95 == expected, "Incremental P95 changed the exact percentile");
+    }
+    return Task.CompletedTask;
+});
 await Run("CSV: invariant numbers, escaping, and spreadsheet formula protection", () =>
 {
     var csv = CsvExporter.Export([new(DateTimeOffset.Now, "=bad,\"host", ProbeMode.Tcp, TrafficPhase.Upload, 12.34, "+formula\nline")]);
@@ -374,7 +390,22 @@ await Run("Automatic installation waits for idle, respects preferences, records 
     Check(JsonSerializer.Deserialize<UpdateCheckState>("{\"Enabled\":false}") is { Enabled: false, AutoInstall: true }, "Legacy update preferences did not migrate");
     return Task.CompletedTask;
 });
-await Run("Self-update request rejects wrong handoff tokens, stale requests and noncanonical targets", () =>
+await Run("Invalid cached release preserves disabled update preferences", () =>
+{
+    var directory = Path.Combine(Path.GetTempPath(), "NetPulse-preferences-" + Guid.NewGuid().ToString("N"));
+    var state = new UpdateCheckState(Enabled: false, AutoInstall: false,
+        LastCheckedAt: DateTimeOffset.UtcNow, Release: ReleaseFixture() with { Sha256 = "damaged" });
+    try
+    {
+        var storage = new UpdateStateStorage(directory);
+        storage.Save(state);
+        var loaded = storage.Load();
+        Check(loaded == state with { Release = null }, "Invalid release reset user preferences or check history");
+    }
+    finally { File.Delete(Path.Combine(directory, "updates.json")); Directory.Delete(directory); }
+    return Task.CompletedTask;
+});
+await Run("Self-update request rejects wrong handoff tokens, stale requests and noncanonical targets", async () =>
 {
     var directory = Path.Combine(Path.GetTempPath(), "NetPulse-handoff-" + Guid.NewGuid().ToString("N"));
     var id = Guid.NewGuid().ToString("N");
@@ -386,7 +417,11 @@ await Run("Self-update request rejects wrong handoff tokens, stale requests and 
     try
     {
         File.WriteAllText(path, JsonSerializer.Serialize(request));
-        Check(SelfUpdate.ReadTransaction(path, request.Nonce).Request.Id == id, "Valid request rejected");
+        var transaction = SelfUpdate.ReadTransaction(path, request.Nonce);
+        Check(transaction.Request.Id == id, "Valid request rejected");
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await ThrowsAsync<OperationCanceledException>(() => SelfUpdate.StartHelperAsync(transaction, canceled.Token));
         Throws<InvalidDataException>(() => SelfUpdate.ReadTransaction(path, new string('C', 64)));
         File.WriteAllText(path, JsonSerializer.Serialize(request with { CreatedAt = DateTimeOffset.UtcNow.AddHours(-1) }));
         Throws<InvalidDataException>(() => SelfUpdate.ReadTransaction(path, request.Nonce));
@@ -394,7 +429,6 @@ await Run("Self-update request rejects wrong handoff tokens, stale requests and 
         Throws<InvalidDataException>(() => SelfUpdate.ReadTransaction(path, request.Nonce));
     }
     finally { File.Delete(path); Directory.Delete(transactionDirectory); Directory.Delete(Path.GetDirectoryName(transactionDirectory)!); Directory.Delete(directory); }
-    return Task.CompletedTask;
 });
 await Run("Self-update rejects a hash-valid payload that is not a Windows executable", async () =>
 {
@@ -449,7 +483,7 @@ if (failed == 0 && args.Contains("--verify-github"))
         var release = await client.CheckAsync(default) ?? throw new Exception("No public GitHub release");
         var project = System.Xml.Linq.XDocument.Load("src/NetPulse/NetPulse.csproj");
         var current = Version.Parse(project.Descendants("Version").Single().Value);
-        Check(release.Version == current.ToString(3) && release.IsNewerThan(new Version(1, 2, 0)) && release.IsNewerThan(new Version(1, 3, 0)) && !release.IsNewerThan(current), "Published version or old-client upgrade detection mismatch");
+        Check(release.Version == current.ToString(3) && release.IsNewerThan(new Version(1, 2, 0)) && release.IsNewerThan(new Version(1, 3, 0)) && release.IsNewerThan(new Version(1, 5, 0)) && !release.IsNewerThan(current), "Published version or old-client upgrade detection mismatch");
         Directory.CreateDirectory("artifacts/github-client");
         await client.DownloadAsync(release, "artifacts/github-client/NetPulse.exe", null, default);
         File.WriteAllText("artifacts/github-client/verification.json", JsonSerializer.Serialize(new { release.Version, release.Size, release.Sha256, OldClientDetectsUpdate = true, CurrentClientIsLatest = true, DownloadVerified = true }, new JsonSerializerOptions { WriteIndented = true }));
